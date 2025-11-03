@@ -6,7 +6,7 @@ An AI-powered web browser built with Electron that integrates Claude AI and Ince
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-green.svg)
 ![Version](https://img.shields.io/badge/version-1.0.5-brightgreen.svg)
-![Build Status](https://github.com/tullytim/claude-browser/actions/workflows/build.yml/badge.svg)
+![Build Status](https://github.com/tullytim/synapse-browser/actions/workflows/build.yml/badge.svg)
 
 ## Features
 
@@ -126,8 +126,8 @@ An AI-powered web browser built with Electron that integrates Claude AI and Ince
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/tullytim/claude-browser.git
-cd claude-browser
+git clone https://github.com/tullytim/synapse-browser.git
+cd synapse-browser
 ```
 
 2. Install dependencies:
@@ -489,7 +489,7 @@ npm run test:coverage
 ## Project Structure
 
 ```
-claude-browser/
+synapse-browser/
 ├── main.js                      # Main Electron process & API integration
 ├── renderer.js                  # Browser UI, tab management, and features
 ├── rpa-engine.js               # Web automation recording and playback engine
@@ -614,7 +614,7 @@ SOFTWARE.
 ## Support
 
 For issues, questions, or suggestions:
-- Open an issue on [GitHub](https://github.com/tullytim/claude-browser/issues)
+- Open an issue on [GitHub](https://github.com/tullytim/synapse-browser/issues)
 - Contact: tim@menlovc.com
 
 ## Changelog
@@ -628,7 +628,7 @@ For issues, questions, or suggestions:
 - 📝 Enhanced documentation and security guidelines
 
 ### Previous Versions
-See [GitHub Releases](https://github.com/tullytim/claude-browser/releases) for full changelog.
+See [GitHub Releases](https://github.com/tullytim/synapse-browser/releases) for full changelog.
 
 ---
 
