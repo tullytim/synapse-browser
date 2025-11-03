@@ -420,7 +420,7 @@ The tracker blocker intelligently blocks third-party tracking while preserving s
 **Toggle on/off from the toolbar** - Track your privacy preferences
 
 ### Web Automation System
-Claude Browser includes a powerful automation recording and playback system:
+Synapse Browser includes a powerful automation recording and playback system:
 
 **Recording Automations**:
 - Records all user interactions including clicks, typing, scrolls, and navigation
