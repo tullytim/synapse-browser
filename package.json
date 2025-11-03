@@ -1,0 +1,164 @@
+{
+  "name": "synapse-browser",
+  "version": "1.0.5",
+  "description": "An AI-native browser with Claude and Inception Labs AI integrated throughout",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --mac --win --publish never",
+    "build-mac": "electron-builder --mac --publish never",
+    "build-win": "electron-builder --win --publish never",
+    "build-linux": "electron-builder --linux --publish never",
+    "dev": "electron . --dev",
+    "dist": "electron-builder",
+    "test": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "playwright test",
+    "test:watch": "vitest --watch",
+    "test:coverage": "vitest --coverage",
+    "test:all": "npm run test:unit && npm run test:integration && npm run test:e2e"
+  },
+  "keywords": [
+    "browser",
+    "Anthropic",
+    "Inception Labs"
+  ],
+  "author": "Tim Tully <tim@menlovc.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tullytim/claude-browser.git"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^2.2.1",
+    "@testing-library/dom": "^10.4.1",
+    "@vitest/coverage-v8": "^2.1.9",
+    "electron": "latest",
+    "electron-builder": "^26.0.12",
+    "jsdom": "^25.0.1",
+    "msw": "^2.11.5",
+    "png-to-ico": "^3.0.1",
+    "sinon": "^19.0.5",
+    "vitest": "^2.1.9"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.20.0",
+    "@playwright/test": "^1.55.0",
+    "electron-updater": "^6.1.7",
+    "playwright-core": "^1.55.0",
+    "puppeteer-core": "^24.22.3",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "build": {
+    "appId": "com.synapse.browser",
+    "productName": "Synapse Browser",
+    "asar": true,
+    "publish": {
+      "provider": "github",
+      "owner": "tullytim",
+      "repo": "claude-browser"
+    },
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "479D9E8C16D4252131A6F65507C6004E7B14CE88"
+    },
+    "afterSign": "build/notarize.js",
+    "dmg": {
+      "writeUpdateInfo": false,
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "forceCodeSigning": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "allowElevation": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Claude Browser",
+      "warningsAsErrors": false,
+      "runAfterFinish": false,
+      "differentialPackage": false
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icons/icon-mac-512x512.png"
+    },
+    "files": [
+      "main.js",
+      "config.js",
+      "renderer.js",
+      "preload.js",
+      "webview-preload.js",
+      "ad-blocker-rules.js",
+      "tracker-blocker-rules.js",
+      "electron-recorder.js",
+      "webview-preload.js",
+      "rpa-engine.js",
+      "puppeteer-controller.js",
+      "automation-manager.js",
+      "puppeteer-recorder.js",
+      "puppeteer-recorder-with-ui.js",
+      "computer-use.js",
+      "index.html",
+      "styles.css",
+      "assets/**/*",
+      "rpa-engine.js",
+      "node_modules/**/*",
+      "!**/.DS_Store",
+      "!**/*.map",
+      "!.git",
+      "!.gitignore",
+      "!build/**/*",
+      "!dist/**/*",
+      "!*.log",
+      "!*.md",
+      "!.env",
+      "!generate-icons.sh",
+      "!CLAUDE.md",
+      "!*.backup*",
+      "!tests/**/*",
+      "!vitest.config.js",
+      "!playwright.config.js"
+    ]
+  },
+  "optionalDependencies": {
+    "dmg-license": "^1.0.11",
+    "fsevents": "^2.3.3"
+  }
+}
