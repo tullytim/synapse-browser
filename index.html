@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Browser</title>
+    <link rel="icon" type="image/png" href="assets/icons8-claude-ai-512.png">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="browser-container">
+        <div id="tab-bar">
+            <div class="tab-bar-drag-region"></div>
+            <div id="tabs-container"></div>
+            <button id="new-tab-btn" title="Open a new tab (Cmd+T / Ctrl+T)">+</button>
+        </div>
+        
+        <div id="nav-bar">
+            <div id="nav-controls">
+                <button id="back-btn" disabled title="Go back (Alt+←)">←</button>
+                <button id="forward-btn" disabled title="Go forward (Alt+→)">→</button>
+                <button id="refresh-btn" title="Reload this page (Cmd+R / Ctrl+R)">↻</button>
+            </div>
+            <div id="address-bar-container">
+                <input
+                    type="text"
+                    id="address-bar"
+                    placeholder="Enter URL or ask Claude/Mercury..."
+                    autocomplete="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                />
+                <div id="autocomplete-dropdown" class="autocomplete-dropdown hidden"></div>
+                <input
+                    type="text"
+                    id="google-search-bar"
+                    placeholder="Google search"
+                    autocomplete="off"
+                    autocorrect="off"
+                    spellcheck="false"
+                />
+                <div class="downloads-container">
+                    <button id="downloads-btn" title="Downloads">
+                        <span class="downloads-icon">↓</span>
+                        <span id="downloads-badge" class="downloads-badge hidden">0</span>
+                    </button>
+                    <div id="downloads-panel" class="downloads-panel hidden">
+                        <div class="downloads-header">
+                            <h3>Downloads</h3>
+                            <button id="clear-downloads-btn" class="clear-downloads-btn">Clear All</button>
+                        </div>
+                        <div id="downloads-list" class="downloads-list">
+                            <div class="downloads-empty">No downloads yet</div>
+                        </div>
+                    </div>
+                </div>
+                <button id="settings-btn" title="Settings">⚙</button>
+            </div>
+        </div>
+
+        <div id="tools-bar">
+            <div class="summary-dropdown">
+                <button id="summary-btn" title="AI-powered page interactions">✨ Interact</button>
+                <div id="summary-menu" class="summary-menu hidden">
+                    <div class="summary-menu-item" data-action="single-page">📄 Summarize Current Page</div>
+                    <div class="summary-menu-item" data-action="multi-page">📚 Multi-Page Summary</div>
+                    <div class="summary-menu-item" data-action="ask-page">💬 Ask About Page</div>
+                    <div class="summary-menu-item" data-action="search-suggestions">🔍 Search Suggestions</div>
+                </div>
+            </div>
+            <button id="smart-bookmark-btn" title="Create AI-enhanced bookmark with tags">🔖 Smart Bookmark</button>
+            <button id="semantic-search-btn" title="Search content across all open tabs">🔎 Search All Tabs</button>
+            <button id="screenshot-btn" title="Take a screenshot of the current page">📸 Screenshot</button>
+            <button id="computer-use-btn" title="Let Claude control the page" style="display: none;">🤖 Claude Control</button>
+            <button id="group-tabs-btn" title="Group similar tabs together">🗂️ Group Tabs</button>
+            <div class="automation-dropdown">
+                <button id="automation-btn" title="Web automation workflows">🎯 Automations</button>
+                <div id="automation-menu" class="automation-menu hidden">
+                    <div class="automation-menu-item" data-action="record">📹 Record New Automation</div>
+                    <div class="automation-menu-separator"></div>
+                    <div class="automation-menu-section">
+                        <div class="automation-menu-header">Saved Automations</div>
+                        <div id="saved-automations-menu" class="saved-automations-menu">
+                            <div class="no-automations-menu">No saved automations</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="dark-mode-enforcer-toggle">
+                <label class="toggle-switch" title="Force dark mode on all pages">
+                    <input type="checkbox" id="dark-mode-enforcer-toggle">
+                    <span class="toggle-slider"></span>
+                </label>
+                <label for="dark-mode-enforcer-toggle" class="toggle-label" title="Force dark mode on all pages">Dark Mode</label>
+            </div>
+            <div class="ad-blocker-toggle">
+                <label class="toggle-switch" title="Toggle ad blocker">
+                    <input type="checkbox" id="ad-blocker-toggle" checked>
+                    <span class="toggle-slider"></span>
+                </label>
+                <label for="ad-blocker-toggle" class="toggle-label" title="Toggle ad blocker">Block Ads</label>
+            </div>
+            <div class="tracker-blocker-toggle">
+                <label class="toggle-switch" title="Block tracking pixels and beacons (but not CAPTCHAs)">
+                    <input type="checkbox" id="tracker-blocker-toggle" checked>
+                    <span class="toggle-slider"></span>
+                </label>
+                <label for="tracker-blocker-toggle" class="toggle-label" title="Block tracking pixels and beacons (but not CAPTCHAs)">Block Trackers</label>
+            </div>
+            <div class="model-selector">
+                <label for="model-select" title="Select AI model for features">Model:</label>
+                <select id="model-select" title="Select AI model for features">
+                    <option value="mercury">Inception Labs Mercury</option>
+                    <option value="claude-sonnet-4-5-20250929">Claude Sonnet 4.5</option>
+                    <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
+                    <option value="claude-opus-4-1-20250805">Claude Opus 4.1</option>
+                    <option value="claude-opus-4-20250514">Claude Opus 4</option>
+                    <option value="claude-sonnet-4-20250514" selected>Claude Sonnet 4</option>
+                    <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
+                    <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                </select>
+            </div>
+        </div>
+        
+        <div id="bookmarks-bar">
+            <div id="tag-filter-container">
+                <select id="tag-filter" title="Filter bookmarks by tag">
+                    <option value="">All bookmarks</option>
+                </select>
+            </div>
+            <button id="bookmarks-scroll-left" class="bookmarks-scroll-btn" title="Scroll left">‹</button>
+            <div id="bookmarks-container"></div>
+            <button id="bookmarks-scroll-right" class="bookmarks-scroll-btn" title="Scroll right">›</button>
+        </div>
+        
+        <div id="api-key-warning" class="hidden">
+            <div class="warning-content">
+                <button id="api-key-warning-close" class="warning-close" title="Close this warning">×</button>
+                <p>⚠️ Claude API key not set. Please set your ANTHROPIC_API_KEY environment variable or enter it below:</p>
+                <div class="api-key-input-container">
+                    <input type="password" id="api-key-input" placeholder="Enter your Anthropic API key">
+                    <button id="set-api-key-btn" title="Save API key">Set API Key</button>
+                </div>
+                <p class="api-key-help">Need an API key? <a href="#" id="get-api-key-link" title="Open Anthropic Console to get API key">Get one from Anthropic Console →</a></p>
+            </div>
+        </div>
+
+        <div id="offline-warning" class="hidden">
+            <div class="offline-warning-content">
+                <span class="offline-icon">📡</span>
+                <span class="offline-message">No internet connection detected</span>
+                <span class="offline-status">• Offline</span>
+            </div>
+        </div>
+
+        <div id="content-area">
+            <div id="search-bar" class="hidden">
+                <input type="text" id="search-input" placeholder="Find in page...">
+                <span id="search-results">0 of 0</span>
+                <button id="search-prev" title="Previous result">↑</button>
+                <button id="search-next" title="Next result">↓</button>
+                <button id="search-close" title="Close search">×</button>
+            </div>
+            <div id="main-content-wrapper">
+                <div id="tabs-content"></div>
+                <div id="computer-use-sidebar" class="hidden">
+                    <div class="sidebar-header">
+                        <h3>🤖 Claude Control</h3>
+                        <button id="computer-use-sidebar-close" title="Close Claude Control">×</button>
+                    </div>
+                    <div class="sidebar-body">
+                        <div class="computer-use-input">
+                            <textarea id="computer-use-task" placeholder="What would you like Claude to do? E.g., 'Find the login button and click it'"></textarea>
+                            <button id="computer-use-start" title="Start Claude control task">Start Task</button>
+                        </div>
+                        <div class="computer-use-status hidden">
+                            <div id="computer-use-log"></div>
+                            <button id="computer-use-stop" title="Stop current task">Stop</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <div id="summary-overlay" class="hidden">
+        <div class="summary-content">
+            <div class="summary-header">
+                <h2>Page Summary</h2>
+                <button class="summary-close" title="Close summary">×</button>
+            </div>
+            <div class="summary-body"></div>
+        </div>
+    </div>
+
+    <div id="extract-overlay" class="hidden">
+        <div class="extract-content">
+            <div class="extract-header">
+                <h2>Extracted Media</h2>
+                <button class="extract-close" title="Close">×</button>
+            </div>
+            <div class="extract-body"></div>
+        </div>
+    </div>
+
+    <div id="save-automation-dialog" class="dialog-overlay hidden">
+        <div class="dialog-content">
+            <div class="dialog-header">
+                <h3>Save Automation</h3>
+                <button class="dialog-close" title="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <p id="automation-info"></p>
+                <input type="text" id="automation-name-input" placeholder="Enter automation name..." autofocus>
+                <div class="dialog-buttons">
+                    <button id="automation-save-btn" class="btn-primary">Save</button>
+                    <button id="automation-cancel-btn" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-dialog" class="dialog-overlay hidden">
+        <div class="dialog-content">
+            <div class="dialog-header">
+                <h3>Settings</h3>
+                <button class="dialog-close" id="settings-close-btn" title="Close">×</button>
+            </div>
+            <div class="dialog-body settings-body">
+                <div class="settings-section">
+                    <h4>API Keys</h4>
+                    <div class="settings-item">
+                        <label>Anthropic API Key</label>
+                        <input type="password" id="anthropic-api-key-setting" placeholder="sk-ant-...">
+                        <p class="settings-description">Your Anthropic API key for Claude features</p>
+                    </div>
+                    <div class="settings-item">
+                        <label>Inception Labs API Key</label>
+                        <input type="password" id="inception-api-key-setting" placeholder="Enter Inception Labs API key">
+                        <p class="settings-description">Your Inception Labs API key</p>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h4>Startup</h4>
+                    <div class="settings-item">
+                        <label class="settings-checkbox">
+                            <input type="checkbox" id="restore-tabs-setting">
+                            <span>Restore tabs from previous session</span>
+                        </label>
+                        <p class="settings-description">When enabled, all tabs from your last session will be reopened when you start the browser</p>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h4>Privacy</h4>
+                    <div class="settings-item">
+                        <label class="settings-checkbox">
+                            <input type="checkbox" id="save-history-setting" checked>
+                            <span>Save browsing history</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h4>Onboarding</h4>
+                    <div class="settings-item">
+                        <button id="reset-onboarding-btn" class="btn-secondary">Reset Onboarding Tour</button>
+                        <p class="settings-description">Restart the welcome tour to learn about Claude Browser features again</p>
+                    </div>
+                </div>
+
+                <div class="dialog-buttons">
+                    <button id="settings-save-btn" class="btn-primary">Save</button>
+                    <button id="settings-cancel-btn" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="onboarding-overlay" class="onboarding-overlay hidden">
+        <div class="onboarding-content">
+            <button class="onboarding-skip" title="Skip onboarding">Skip</button>
+
+            <div class="onboarding-step" data-step="0">
+                <div class="onboarding-icon">🌐</div>
+                <h2>Welcome to Claude Browser</h2>
+                <p>A next-generation browser powered by Anthropic's Claude and Inception Labs' Mercury</p>
+                <p class="onboarding-description">Let's take a quick tour to show you the powerful AI features that make browsing smarter and more efficient.</p>
+            </div>
+
+            <div class="onboarding-step hidden" data-step="1">
+                <div class="onboarding-icon">🔍</div>
+                <h2>AI-Powered Search Bar</h2>
+                <p>Your address bar is more than just a URL input</p>
+                <div class="onboarding-demo">
+                    <div class="demo-address-bar">
+                        <span class="demo-text">Enter URL or search with Claude...</span>
+                    </div>
+                </div>
+                <ul class="onboarding-features">
+                    <li>Type any question to get instant AI-powered answers</li>
+                    <li>Enter URLs to navigate normally</li>
+                    <li>Use commands like <code>/summarize</code>, <code>/stock</code>, or <code>/weather</code></li>
+                    <li>Get smart autocomplete suggestions as you type</li>
+                </ul>
+            </div>
+
+            <div class="onboarding-step hidden" data-step="2">
+                <div class="onboarding-icon">🎯</div>
+                <h2>Web Automations</h2>
+                <p>Record and replay your web workflows</p>
+                <div class="onboarding-demo">
+                    <div class="demo-automation-btn">🎯 Automations ▼</div>
+                </div>
+                <ul class="onboarding-features">
+                    <li>Click the Automations button to record your actions</li>
+                    <li>Perform tasks like form filling, data extraction, or navigation</li>
+                    <li>Save your automation and replay it anytime</li>
+                    <li>Create bookmarks that run automations automatically</li>
+                </ul>
+            </div>
+
+            <div class="onboarding-step hidden" data-step="3">
+                <div class="onboarding-icon">🔖</div>
+                <h2>Import Your Bookmarks</h2>
+                <p>Bring your bookmarks from your existing browser</p>
+                <div class="onboarding-description">
+                    <p>We can import bookmarks from:</p>
+                    <div class="import-browser-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 20px 0;">
+                        <button class="onboarding-import-btn" data-browser="chrome" style="padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; background: white; cursor: pointer; transition: all 0.2s;">
+                            <div style="font-size: 24px; margin-bottom: 5px;">🌐</div>
+                            <div style="font-weight: 500;">Chrome</div>
+                        </button>
+                        <button class="onboarding-import-btn" data-browser="firefox" style="padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; background: white; cursor: pointer; transition: all 0.2s;">
+                            <div style="font-size: 24px; margin-bottom: 5px;">🦊</div>
+                            <div style="font-weight: 500;">Firefox</div>
+                        </button>
+                        <button class="onboarding-import-btn" data-browser="safari" style="padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; background: white; cursor: pointer; transition: all 0.2s;">
+                            <div style="font-size: 24px; margin-bottom: 5px;">🧭</div>
+                            <div style="font-weight: 500;">Safari</div>
+                        </button>
+                        <button class="onboarding-import-btn" data-browser="edge" style="padding: 15px; border: 2px solid #e0e0e0; border-radius: 8px; background: white; cursor: pointer; transition: all 0.2s;">
+                            <div style="font-size: 24px; margin-bottom: 5px;">🌊</div>
+                            <div style="font-weight: 500;">Edge</div>
+                        </button>
+                    </div>
+                    <div id="import-status" style="margin-top: 15px; padding: 10px; border-radius: 6px; display: none;"></div>
+                    <div style="margin-top: 20px; text-align: center;">
+                        <button id="onboarding-skip-import" class="onboarding-btn onboarding-btn-secondary">Skip for Now</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="onboarding-step hidden" data-step="4">
+                <div class="onboarding-icon">🏠</div>
+                <h2>Make Claude Browser Your Default</h2>
+                <p>Would you like to set Claude Browser as your default browser?</p>
+                <div class="onboarding-description">
+                    <p>Setting Claude Browser as your default browser means:</p>
+                    <ul class="onboarding-features">
+                        <li>All web links will open in Claude Browser automatically</li>
+                        <li>You'll have AI assistance available for all your browsing</li>
+                        <li>You can change this later in your system settings</li>
+                    </ul>
+                    <div class="onboarding-default-browser-buttons">
+                        <button id="onboarding-set-default" class="onboarding-btn onboarding-btn-primary" style="margin: 10px 5px;">Set as Default</button>
+                        <button id="onboarding-skip-default" class="onboarding-btn onboarding-btn-secondary" style="margin: 10px 5px;">Not Now</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="onboarding-step hidden" data-step="5">
+                <div class="onboarding-icon">✨</div>
+                <h2>You're All Set!</h2>
+                <p>Start exploring with Claude and Mercury AI models</p>
+                <div class="onboarding-description">
+                    <p>You've discovered the core features. Here are more built-in tools:</p>
+                    <ul class="onboarding-features">
+                        <li>📄 Summarize pages with the Summary button</li>
+                        <li>🔖 Create smart bookmarks with AI-generated tags</li>
+                        <li>🔎 Search content across all open tabs</li>
+                        <li>📸 Take screenshots and save them instantly</li>
+                        <li>🌙 Built-in Dark Mode enforcer for all websites</li>
+                        <li>🛡️ Ad blocker enabled by default for faster browsing</li>
+                        <li>⚙️ Choose between Claude and Mercury models in the toolbar</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="onboarding-navigation">
+                <button id="onboarding-prev" class="onboarding-btn onboarding-btn-secondary" disabled>Previous</button>
+                <div class="onboarding-dots">
+                    <span class="onboarding-dot active" data-dot="0"></span>
+                    <span class="onboarding-dot" data-dot="1"></span>
+                    <span class="onboarding-dot" data-dot="2"></span>
+                    <span class="onboarding-dot" data-dot="3"></span>
+                    <span class="onboarding-dot" data-dot="4"></span>
+                    <span class="onboarding-dot" data-dot="5"></span>
+                </div>
+                <button id="onboarding-next" class="onboarding-btn onboarding-btn-primary">Next</button>
+            </div>
+        </div>
+    </div>
+
+
+    <div id="multi-page-summary-dialog" class="dialog-overlay hidden">
+        <div class="dialog-content">
+            <div class="dialog-header">
+                <h3>Multi-Page Summary</h3>
+                <button class="dialog-close" title="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <p>Select how many of your recent tabs to include in the summary:</p>
+                <div class="tab-selection">
+                    <label>
+                        <input type="range" id="tab-count-slider" min="2" max="10" value="5">
+                        <span id="tab-count-display">5 tabs</span>
+                    </label>
+                </div>
+                <div id="tab-preview-list" class="tab-preview-list"></div>
+                <div class="dialog-buttons">
+                    <button id="multi-summary-start-btn" class="btn-primary">Generate Summary</button>
+                    <button id="multi-summary-cancel-btn" class="btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="semantic-search-dialog" class="dialog-overlay hidden">
+        <div class="dialog-content">
+            <div class="dialog-header">
+                <h3>Search Across All Tabs</h3>
+                <button class="dialog-close" title="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <p>Enter your search query to find content across all open tabs:</p>
+                <input type="text" id="semantic-search-input" placeholder="What are you looking for?" autofocus>
+                <div class="dialog-buttons">
+                    <button id="semantic-search-btn-confirm" class="btn-primary">Search</button>
+                    <button id="semantic-search-btn-cancel" class="btn-secondary">Cancel</button>
+                </div>
+                <div id="semantic-search-results" class="semantic-search-results hidden">
+                    <div class="search-results-header">Search Results</div>
+                    <div id="semantic-search-results-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="ask-page-dialog" class="dialog-overlay hidden">
+        <div class="dialog-content">
+            <div class="dialog-header">
+                <h3>Ask About This Page</h3>
+                <button class="dialog-close" title="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <p>Ask a question about the content on this page:</p>
+                <textarea id="ask-page-input" placeholder="What would you like to know about this page?" rows="3" autofocus></textarea>
+                <div class="dialog-buttons">
+                    <button id="ask-page-btn-confirm" class="btn-primary">Ask</button>
+                    <button id="ask-page-btn-cancel" class="btn-secondary">Cancel</button>
+                </div>
+                <div id="ask-page-results" class="ask-page-results hidden">
+                    <div class="ask-results-header">Answer</div>
+                    <div id="ask-page-answer"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <div id="page-context-menu" class="page-context-menu">
+        <div class="context-menu-item" data-action="back">Back</div>
+        <div class="context-menu-item" data-action="forward">Forward</div>
+        <div class="context-menu-item" data-action="reload">Reload</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="save-as">Save As...</div>
+        <div class="context-menu-item" data-action="print">Print</div>
+        <div class="context-menu-item" data-action="view-source">View Page Source</div>
+        <div class="context-menu-item" data-action="inspect">Inspect Element (F12)</div>
+    </div>
+
+    <div id="link-context-menu" class="page-context-menu">
+        <div class="context-menu-item" data-action="open-new-tab">Open Link in New Tab</div>
+        <div class="context-menu-item" data-action="open-new-window">Open Link in New Window</div>
+        <div class="context-menu-item" data-action="open-incognito-tab">Open Link in Incognito Tab</div>
+        <div class="context-menu-item" data-action="open-incognito-window">Open Link in Incognito Window</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="copy-link">Copy Link Address</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="inspect">Inspect Element</div>
+    </div>
+
+    <div id="text-context-menu" class="page-context-menu">
+        <div class="context-menu-item" data-action="copy-text">Copy</div>
+        <div class="context-menu-item" data-action="search-claude">Search Claude for "<span class="selected-text-preview"></span>"</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="inspect">Inspect Element</div>
+    </div>
+
+    <div id="image-context-menu" class="page-context-menu">
+        <div class="context-menu-item" data-action="save-image">Save Image As...</div>
+        <div class="context-menu-item" data-action="copy-image">Copy Image</div>
+        <div class="context-menu-item" data-action="copy-image-url">Copy Image Address</div>
+        <div class="context-menu-item" data-action="open-image-new-tab">Open Image in New Tab</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="inspect">Inspect Element</div>
+    </div>
+
+    <div id="tab-context-menu" class="page-context-menu">
+        <div class="context-menu-item" data-action="new-tab-right">New tab to the right</div>
+        <div class="context-menu-item" data-action="reload-tab">Reload</div>
+        <div class="context-menu-item" data-action="duplicate-tab">Duplicate</div>
+        <div class="context-menu-item" data-action="pin-tab">Pin</div>
+        <div class="context-menu-item" data-action="mute-tab">Mute site</div>
+        <div class="context-menu-item" data-action="move-to-new-window">Move Tab to New Window</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="close-tab">Close</div>
+        <div class="context-menu-item" data-action="close-other-tabs">Close Other Tabs</div>
+    </div>
+
+    <div id="url-bar-context-menu" class="page-context-menu">
+        <div class="context-menu-item" data-action="cut">Cut</div>
+        <div class="context-menu-item" data-action="copy">Copy</div>
+        <div class="context-menu-item" data-action="paste">Paste</div>
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" data-action="delete">Delete</div>
+    </div>
+
+    <script src="rpa-engine.js"></script>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
