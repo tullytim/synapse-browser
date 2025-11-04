@@ -1,4 +1,4 @@
-name: Build Claude Browser
+name: Build Synapse Browser
 
 on:
   push:
@@ -186,7 +186,7 @@ jobs:
     - name: Upload macOS artifact
       uses: actions/upload-artifact@v4
       with:
-        name: claude-browser-macos
+        name: synapse-browser-macos
         path: |
           dist/*.dmg
           dist/*.zip
@@ -222,7 +222,7 @@ jobs:
     - name: Upload Windows artifact
       uses: actions/upload-artifact@v4
       with:
-        name: claude-browser-windows
+        name: synapse-browser-windows
         path: |
           dist/*.exe
         if-no-files-found: warn
@@ -249,7 +249,7 @@ jobs:
     - name: Upload Linux artifact
       uses: actions/upload-artifact@v4
       with:
-        name: claude-browser-linux
+        name: synapse-browser-linux
         path: |
           dist/*.AppImage
           dist/*.deb
