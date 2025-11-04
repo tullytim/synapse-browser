@@ -5,7 +5,7 @@
 const CONFIG = {
     // Browser branding
     BROWSER_NAME: 'Synapse',
-    BROWSER_VERSION: '1.0.5',
+    BROWSER_VERSION: '1.0.6',
 
     // Window settings
     DEFAULT_WINDOW_WIDTH: 1400,
