@@ -206,6 +206,27 @@ class TabManager {
     async init() {
         // Anti-bot measures are now handled by webview-preload.js
 
+        // Set up address bar favicon drag listeners
+        const addressBarFavicon = document.getElementById('address-bar-favicon');
+        if (addressBarFavicon) {
+            addressBarFavicon.addEventListener('dragstart', (e) => {
+                const tab = this.getCurrentTab();
+                if (tab && tab.url) {
+                    e.dataTransfer.effectAllowed = 'copy';
+                    e.dataTransfer.setData('text/plain', JSON.stringify({
+                        url: tab.url,
+                        title: tab.title,
+                        favicon: tab.favicon
+                    }));
+                    addressBarFavicon.style.opacity = '0.5';
+                }
+            });
+
+            addressBarFavicon.addEventListener('dragend', (e) => {
+                addressBarFavicon.style.opacity = '1';
+            });
+        }
+
         // Set up listener for DevTools toggle from menu
         window.electronAPI.onToggleWebviewDevTools(() => {
             this.toggleWebviewDevTools();
@@ -2224,35 +2245,9 @@ class TabManager {
     }
     
     updateAddressBarFavicon(faviconUrl) {
-        let favicon = document.getElementById('address-bar-favicon');
-        if (!favicon) {
-            // Create favicon element if it doesn't exist
-            favicon = document.createElement('img');
-            favicon.id = 'address-bar-favicon';
-            favicon.width = 16;
-            favicon.height = 16;
-            favicon.draggable = true;
-            this.addressBar.parentElement.insertBefore(favicon, this.addressBar);
-            
-            // Add drag event listeners to favicon
-            favicon.addEventListener('dragstart', (e) => {
-                const tab = this.getCurrentTab();
-                if (tab && tab.url) {
-                    e.dataTransfer.effectAllowed = 'copy';
-                    e.dataTransfer.setData('text/plain', JSON.stringify({
-                        url: tab.url,
-                        title: tab.title,
-                        favicon: tab.favicon
-                    }));
-                    favicon.style.opacity = '0.5';
-                }
-            });
-            
-            favicon.addEventListener('dragend', (e) => {
-                favicon.style.opacity = '1';
-            });
-        }
-        
+        const favicon = document.getElementById('address-bar-favicon');
+        if (!favicon) return; // Favicon element should exist in HTML
+
         if (faviconUrl) {
             favicon.src = faviconUrl;
             favicon.style.display = 'inline-block';
@@ -2565,22 +2560,22 @@ class TabManager {
         // Set up streaming listeners
         window.electronAPI.onSummaryStreamChunk((data) => {
             streamedContent += data.text;
-            claudeResults.innerHTML = this.processMarkdownContent(streamedContent);
+            claudeResults.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(streamedContent));
         });
 
         window.electronAPI.onSummaryStreamEnd((data) => {
-            claudeResults.innerHTML = this.processMarkdownContent(data.fullContent);
+            claudeResults.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(data.fullContent));
             this.updateTabTitle(newTabId, '📝 Simplified Summary');
             window.electronAPI.removeSummaryStreamListeners();
         });
 
         window.electronAPI.onSummaryStreamError((data) => {
-            claudeResults.innerHTML = `
+            claudeResults.innerHTML = DOMPurify.sanitize(`
                 <div class="error">
                     <h3>Error generating simplified summary</h3>
                     <p>${data.error}</p>
                 </div>
-            `;
+            `);
             this.updateTabTitle(newTabId, '❌ Error');
             window.electronAPI.removeSummaryStreamListeners();
         });
@@ -2646,22 +2641,22 @@ class TabManager {
         // Set up streaming listeners
         window.electronAPI.onSummaryStreamChunk((data) => {
             streamedContent += data.text;
-            claudeResults.innerHTML = this.processMarkdownContent(streamedContent);
+            claudeResults.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(streamedContent));
         });
 
         window.electronAPI.onSummaryStreamEnd((data) => {
-            claudeResults.innerHTML = this.processMarkdownContent(data.fullContent);
+            claudeResults.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(data.fullContent));
             this.updateTabTitle(newTabId, '📄 TLDR');
             window.electronAPI.removeSummaryStreamListeners();
         });
 
         window.electronAPI.onSummaryStreamError((data) => {
-            claudeResults.innerHTML = `
+            claudeResults.innerHTML = DOMPurify.sanitize(`
                 <div class="error">
                     <h3>Error generating TLDR</h3>
                     <p>${data.error}</p>
                 </div>
-            `;
+            `);
             this.updateTabTitle(newTabId, '❌ Error');
             window.electronAPI.removeSummaryStreamListeners();
         });
@@ -4419,15 +4414,20 @@ class TabManager {
                                         return;
                                     }
 
-                                    // Always try to update even if we have one (might find better one)
                                     const currentFavicon = tab.favicon;
 
-                                    // Only update if we found a better favicon
-                                    const isDefaultFavicon = currentFavicon && currentFavicon.endsWith('/favicon.ico');
+                                    // Update favicon if:
+                                    // 1. We don't have one yet
+                                    // 2. Current is a default/placeholder and we found a better one
+                                    // 3. Current is different (allows updating to better quality)
+                                    const isPlaceholder = !currentFavicon ||
+                                                         currentFavicon.includes('data:image/svg+xml') ||
+                                                         currentFavicon.endsWith('/favicon.ico');
                                     const foundBetterFavicon = faviconUrl && !faviconUrl.endsWith('/favicon.ico');
 
                                     if (!currentFavicon ||
-                                        (currentFavicon !== faviconUrl && (isDefaultFavicon && foundBetterFavicon))) {
+                                        (isPlaceholder && foundBetterFavicon) ||
+                                        (currentFavicon !== faviconUrl && foundBetterFavicon)) {
                                         this.updateTabFavicon(tabId, faviconUrl);
                                     }
                                 }
@@ -4457,6 +4457,82 @@ class TabManager {
                     setTimeout(() => {
                         webview.focus();
                     }, 100);
+                }
+            });
+
+            // Try extracting favicon again after page fully loads (for dynamically injected favicons)
+            webview.addEventListener('did-finish-load', () => {
+                if (tab && tab.url && !tab.url.startsWith('about:')) {
+                    // Use the same extractFavicon logic as above
+                    const extractFavicon = () => {
+                        const currentTab = this.tabs.find(t => t.id === tabId);
+                        if (!currentTab || !document.body.contains(webview)) {
+                            return;
+                        }
+
+                        try {
+                            webview.executeJavaScript(`
+                                (function() {
+                                    const favicons = [];
+                                    document.querySelectorAll('link[rel*="icon"][sizes]').forEach(link => {
+                                        if (link.href) {
+                                            const sizes = link.getAttribute('sizes');
+                                            favicons.push({
+                                                url: link.href,
+                                                priority: sizes === '32x32' ? 10 : sizes === '16x16' ? 9 : 5
+                                            });
+                                        }
+                                    });
+                                    document.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]').forEach(link => {
+                                        if (link.href && !favicons.find(f => f.url === link.href)) {
+                                            favicons.push({ url: link.href, priority: 8 });
+                                        }
+                                    });
+                                    document.querySelectorAll('link[rel*="icon"]').forEach(link => {
+                                        if (link.href && !favicons.find(f => f.url === link.href)) {
+                                            favicons.push({
+                                                url: link.href,
+                                                priority: link.rel.includes('apple') ? 3 : 4
+                                            });
+                                        }
+                                    });
+                                    const ogImage = document.querySelector('meta[property="og:image"]');
+                                    if (ogImage && ogImage.content) {
+                                        favicons.push({ url: ogImage.content, priority: 2 });
+                                    }
+                                    favicons.push({ url: window.location.origin + '/favicon.ico', priority: 1 });
+                                    favicons.sort((a, b) => b.priority - a.priority);
+                                    return favicons.length > 0 ? favicons[0].url : null;
+                                })();
+                            `).then(faviconUrl => {
+                                if (faviconUrl && tab.url) {
+                                    const currentTab = this.tabs.find(t => t.id === tabId);
+                                    if (!currentTab || currentTab.url !== tab.url) {
+                                        return;
+                                    }
+                                    const currentFavicon = tab.favicon;
+                                    const isPlaceholder = !currentFavicon ||
+                                                         currentFavicon.includes('data:image/svg+xml') ||
+                                                         currentFavicon.endsWith('/favicon.ico');
+                                    const foundBetterFavicon = faviconUrl && !faviconUrl.endsWith('/favicon.ico');
+                                    if (!currentFavicon ||
+                                        (isPlaceholder && foundBetterFavicon) ||
+                                        (currentFavicon !== faviconUrl && foundBetterFavicon)) {
+                                        this.updateTabFavicon(tabId, faviconUrl);
+                                    }
+                                }
+                            }).catch(err => {
+                                if (!err.message.includes('Invalid guestInstanceId')) {
+                                    console.error('Error extracting favicon on load:', err);
+                                }
+                            });
+                        } catch (err) {
+                            // Silently ignore
+                        }
+                    };
+
+                    // Extract after a short delay to let dynamic content settle
+                    setTimeout(extractFavicon, 500);
                 }
             });
 
@@ -5268,15 +5344,20 @@ class TabManager {
                                         return;
                                     }
 
-                                    // Always try to update even if we have one (might find better one)
                                     const currentFavicon = tab.favicon;
 
-                                    // Only update if we found a better favicon
-                                    const isDefaultFavicon = currentFavicon && currentFavicon.endsWith('/favicon.ico');
+                                    // Update favicon if:
+                                    // 1. We don't have one yet
+                                    // 2. Current is a default/placeholder and we found a better one
+                                    // 3. Current is different (allows updating to better quality)
+                                    const isPlaceholder = !currentFavicon ||
+                                                         currentFavicon.includes('data:image/svg+xml') ||
+                                                         currentFavicon.endsWith('/favicon.ico');
                                     const foundBetterFavicon = faviconUrl && !faviconUrl.endsWith('/favicon.ico');
 
                                     if (!currentFavicon ||
-                                        (currentFavicon !== faviconUrl && (isDefaultFavicon && foundBetterFavicon))) {
+                                        (isPlaceholder && foundBetterFavicon) ||
+                                        (currentFavicon !== faviconUrl && foundBetterFavicon)) {
                                         this.updateTabFavicon(tabId, faviconUrl);
                                     }
                                 }
@@ -5298,7 +5379,82 @@ class TabManager {
                     setTimeout(extractFavicon, 2000);
                 }
             });
-            
+
+            // Try extracting favicon again after page fully loads (for dynamically injected favicons)
+            webview.addEventListener('did-finish-load', () => {
+                if (tab && tab.url && !tab.url.startsWith('about:')) {
+                    const extractFavicon = () => {
+                        const currentTab = this.tabs.find(t => t.id === tabId);
+                        if (!currentTab || !document.body.contains(webview)) {
+                            return;
+                        }
+
+                        try {
+                            webview.executeJavaScript(`
+                                (function() {
+                                    const favicons = [];
+                                    document.querySelectorAll('link[rel*="icon"][sizes]').forEach(link => {
+                                        if (link.href) {
+                                            const sizes = link.getAttribute('sizes');
+                                            favicons.push({
+                                                url: link.href,
+                                                priority: sizes === '32x32' ? 10 : sizes === '16x16' ? 9 : 5
+                                            });
+                                        }
+                                    });
+                                    document.querySelectorAll('link[rel="icon"], link[rel="shortcut icon"]').forEach(link => {
+                                        if (link.href && !favicons.find(f => f.url === link.href)) {
+                                            favicons.push({ url: link.href, priority: 8 });
+                                        }
+                                    });
+                                    document.querySelectorAll('link[rel*="icon"]').forEach(link => {
+                                        if (link.href && !favicons.find(f => f.url === link.href)) {
+                                            favicons.push({
+                                                url: link.href,
+                                                priority: link.rel.includes('apple') ? 3 : 4
+                                            });
+                                        }
+                                    });
+                                    const ogImage = document.querySelector('meta[property="og:image"]');
+                                    if (ogImage && ogImage.content) {
+                                        favicons.push({ url: ogImage.content, priority: 2 });
+                                    }
+                                    favicons.push({ url: window.location.origin + '/favicon.ico', priority: 1 });
+                                    favicons.sort((a, b) => b.priority - a.priority);
+                                    return favicons.length > 0 ? favicons[0].url : null;
+                                })();
+                            `).then(faviconUrl => {
+                                if (faviconUrl && tab.url) {
+                                    const currentTab = this.tabs.find(t => t.id === tabId);
+                                    if (!currentTab || currentTab.url !== tab.url) {
+                                        return;
+                                    }
+                                    const currentFavicon = tab.favicon;
+                                    const isPlaceholder = !currentFavicon ||
+                                                         currentFavicon.includes('data:image/svg+xml') ||
+                                                         currentFavicon.endsWith('/favicon.ico');
+                                    const foundBetterFavicon = faviconUrl && !faviconUrl.endsWith('/favicon.ico');
+                                    if (!currentFavicon ||
+                                        (isPlaceholder && foundBetterFavicon) ||
+                                        (currentFavicon !== faviconUrl && foundBetterFavicon)) {
+                                        this.updateTabFavicon(tabId, faviconUrl);
+                                    }
+                                }
+                            }).catch(err => {
+                                if (!err.message.includes('Invalid guestInstanceId')) {
+                                    console.error('Error extracting favicon on load:', err);
+                                }
+                            });
+                        } catch (err) {
+                            // Silently ignore
+                        }
+                    };
+
+                    // Extract after a short delay to let dynamic content settle
+                    setTimeout(extractFavicon, 500);
+                }
+            });
+
             // Handle right-click context menu
             webview.addEventListener('context-menu', async (e) => {
                 e.preventDefault();
@@ -5745,22 +5901,22 @@ class TabManager {
             window.electronAPI.onSummaryStreamChunk((data) => {
                 streamedContent += data.text;
                 // Convert markdown code blocks to HTML
-                summaryBody.innerHTML = this.processMarkdownContent(streamedContent);
+                summaryBody.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(streamedContent));
             });
 
             window.electronAPI.onSummaryStreamEnd((data) => {
                 // Final update with complete content
-                summaryBody.innerHTML = this.processMarkdownContent(data.fullContent);
+                summaryBody.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(data.fullContent));
                 window.electronAPI.removeSummaryStreamListeners();
             });
             
             window.electronAPI.onSummaryStreamError((data) => {
-                summaryBody.innerHTML = `
+                summaryBody.innerHTML = DOMPurify.sanitize(`
                     <div class="error">
                         <h3>Error generating summary</h3>
                         <p>${data.error}</p>
                     </div>
-                `;
+                `);
                 window.electronAPI.removeSummaryStreamListeners();
             });
             
@@ -5769,12 +5925,12 @@ class TabManager {
             await window.electronAPI.summarizePageStream(pageText, model);
         } catch (error) {
             summaryBody.className = 'summary-body';
-            summaryBody.innerHTML = `
+            summaryBody.innerHTML = DOMPurify.sanitize(`
                 <div class="error">
                     <h3>Error extracting page content</h3>
                     <p>${error.message}</p>
                 </div>
-            `;
+            `);
         }
     }
 
@@ -5926,21 +6082,21 @@ class TabManager {
             // Set up streaming listeners
             window.electronAPI.onSummaryStreamChunk((data) => {
                 streamedContent += data.text;
-                summaryBody.innerHTML = this.processMarkdownContent(streamedContent);
+                summaryBody.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(streamedContent));
             });
 
             window.electronAPI.onSummaryStreamEnd((data) => {
-                summaryBody.innerHTML = this.processMarkdownContent(data.fullContent);
+                summaryBody.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(data.fullContent));
                 window.electronAPI.removeSummaryStreamListeners();
             });
 
             window.electronAPI.onSummaryStreamError((data) => {
-                summaryBody.innerHTML = `
+                summaryBody.innerHTML = DOMPurify.sanitize(`
                     <div class="error">
                         <h3>Error generating summary</h3>
                         <p>${data.error}</p>
                     </div>
-                `;
+                `);
                 window.electronAPI.removeSummaryStreamListeners();
             });
 
@@ -6113,7 +6269,7 @@ class TabManager {
                 if (targetContent) {
                     streamedContent += data.text;
                     const processedContent = this.processMarkdownContent(streamedContent);
-                    targetContent.innerHTML = processedContent;
+                    targetContent.innerHTML = DOMPurify.sanitize(processedContent);
                     this.attachLinkHandlersToClaudeResults(searchTabId);
                 }
             });
@@ -6126,7 +6282,7 @@ class TabManager {
                 const targetContent = this.tabsContent.querySelector(`[data-tab-id="${searchTabId}"] .response-content`);
                 if (targetContent) {
                     const processedContent = this.processMarkdownContent(data.fullContent);
-                    targetContent.innerHTML = processedContent;
+                    targetContent.innerHTML = DOMPurify.sanitize(processedContent);
                     this.attachLinkHandlersToClaudeResults(searchTabId);
                 }
 
@@ -6145,13 +6301,13 @@ class TabManager {
                 console.error('Inception stream error:', data);
                 const targetResults = this.tabsContent.querySelector(`[data-tab-id="${searchTabId}"] .tab-claude-results`);
                 if (targetResults) {
-                    targetResults.innerHTML = `
+                    targetResults.innerHTML = DOMPurify.sanitize(`
                         <div class="error">
                             <h2>Error</h2>
                             <p>${data.error}</p>
                             <p>Please check your Inception Labs API key in Settings.</p>
                         </div>
-                    `;
+                    `);
                 }
 
                 if (this.activeClaudeSearches.get(searchTabId) === searchId) {
@@ -6175,7 +6331,7 @@ class TabManager {
                     streamedContent += data.text;
                     // Process markdown content
                     const processedContent = this.processMarkdownContent(streamedContent);
-                    targetContent.innerHTML = processedContent;
+                    targetContent.innerHTML = DOMPurify.sanitize(processedContent);
 
                     // Add click handlers to any new links
                     this.attachLinkHandlersToClaudeResults(searchTabId);
@@ -6195,7 +6351,7 @@ class TabManager {
                 if (targetContent) {
                     // Final update with complete content
                     const processedContent = this.processMarkdownContent(data.fullContent);
-                    targetContent.innerHTML = processedContent;
+                    targetContent.innerHTML = DOMPurify.sanitize(processedContent);
 
                     // Add click handlers to all links in the Claude results
                     this.attachLinkHandlersToClaudeResults(searchTabId);
@@ -13444,8 +13600,18 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
 </html>`;
 
             // Write to a temporary file
-            const tempPath = `/tmp/view-source-${Date.now()}.html`;
-            await window.electronAPI.writeFile(tempPath, sourceViewerHtml);
+            const tempFileName = `view-source-${Date.now()}.html`;
+            const tempPathResult = await window.electronAPI.getTempPath(tempFileName);
+            if (!tempPathResult.success) {
+                console.error('Failed to get temp path:', tempPathResult.error);
+                return;
+            }
+            const tempPath = tempPathResult.path;
+            const writeResult = await window.electronAPI.writeFile(tempPath, sourceViewerHtml);
+            if (!writeResult.success) {
+                console.error('Failed to write temp file:', writeResult.error);
+                return;
+            }
 
             // Create a new tab with the file
             const sourceTabId = this.createTab(`file://${tempPath}`);
@@ -13707,7 +13873,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 suggestionsList.style.display = 'block';
                 suggestionsList.style.visibility = 'visible';
                 suggestionsList.style.opacity = '1';
-                suggestionsList.innerHTML = `<div style="text-align: center; color: #d32f2f; padding: 20px;">Error: ${error.message}</div>`;
+                suggestionsList.innerHTML = DOMPurify.sanitize(`<div style="text-align: center; color: #d32f2f; padding: 20px;">Error: ${error.message}</div>`);
             }
         }
     }
@@ -17809,7 +17975,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
 
             if (response.error) {
                 if (resultsList) {
-                    resultsList.innerHTML = `<div class="semantic-search-result error">Error: ${response.error}</div>`;
+                    resultsList.innerHTML = DOMPurify.sanitize(`<div class="semantic-search-result error">Error: ${response.error}</div>`);
                 }
                 return;
             }
@@ -17820,7 +17986,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         } catch (error) {
             console.error('Semantic search error:', error);
             if (resultsList) {
-                resultsList.innerHTML = `<div class="semantic-search-result error">Error: ${error.message}</div>`;
+                resultsList.innerHTML = DOMPurify.sanitize(`<div class="semantic-search-result error">Error: ${error.message}</div>`);
             }
         }
     }

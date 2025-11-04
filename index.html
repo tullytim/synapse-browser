@@ -22,6 +22,9 @@
                 <button id="refresh-btn" title="Reload this page (Cmd+R / Ctrl+R)">↻</button>
             </div>
             <div id="address-bar-container">
+                <img id="address-bar-favicon" width="16" height="16" draggable="true"
+                     src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiM2NjYiIHN0cm9rZS13aWR0aD0iMiI+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iMTAiLz48bGluZSB4MT0iMiIgeTE9IjEyIiB4Mj0iMjIiIHkyPSIxMiIvPjxwYXRoIGQ9Ik0xMiAyYTUuNSA3LjUgMCAwIDEgMCAyMCA1LjUgNy41IDAgMCAxIDAtMjAiLz48L3N2Zz4="
+                     style="display: inline-block; cursor: grab;">
                 <input
                     type="text"
                     id="address-bar"
@@ -530,6 +533,9 @@
     </div>
 
     <script src="rpa-engine.js"></script>
+
+    <!-- DOMPurify for XSS protection -->
+    <script src="node_modules/dompurify/dist/purify.min.js"></script>
 
     <script src="renderer.js"></script>
 </body>

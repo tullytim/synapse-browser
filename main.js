@@ -2173,13 +2173,107 @@ ipcMain.handle('show-save-dialog', async (event, defaultFileName) => {
   return result;
 });
 
+// Handle getting a safe temp file path
+ipcMain.handle('get-temp-path', async (event, filename) => {
+  try {
+    const tempDir = app.getPath('temp');
+    const safePath = path.join(tempDir, filename);
+    return { success: true, path: safePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Handle writing file to disk
 ipcMain.handle('write-file', async (event, filePath, content) => {
-  const fs = require('fs').promises;
+  const fsPromises = require('fs').promises;
+  const fsSync = require('fs');
+
   try {
-    await fs.writeFile(filePath, content, 'utf8');
-    return { success: true };
+    // SECURITY: Validate and sanitize the file path
+    const resolvedPath = path.resolve(filePath);
+
+    // Get safe directories and resolve them to handle symlinks
+    const tempDir = fsSync.realpathSync(app.getPath('temp'));
+    const homeDir = fsSync.realpathSync(app.getPath('home'));
+    const downloadsDir = fsSync.realpathSync(app.getPath('downloads'));
+    const documentsDir = fsSync.realpathSync(app.getPath('documents'));
+    const desktopDir = fsSync.realpathSync(app.getPath('desktop'));
+    const appDir = fsSync.realpathSync(app.getAppPath());
+
+    // Resolve the target path to handle symlinks
+    const targetDir = path.dirname(resolvedPath);
+    let realTargetDir;
+    try {
+      // Try to get real path if directory exists
+      realTargetDir = fsSync.realpathSync(targetDir);
+    } catch (e) {
+      // If directory doesn't exist yet, use parent that exists
+      let checkDir = targetDir;
+      while (!fsSync.existsSync(checkDir) && checkDir !== path.dirname(checkDir)) {
+        checkDir = path.dirname(checkDir);
+      }
+      if (fsSync.existsSync(checkDir)) {
+        realTargetDir = fsSync.realpathSync(checkDir);
+      } else {
+        realTargetDir = targetDir;
+      }
+    }
+
+    // Prevent directory traversal attacks
+    if (filePath.includes('..') || filePath.includes('~')) {
+      return { success: false, error: 'Invalid path: directory traversal not allowed' };
+    }
+
+    // Check if path is in an allowed directory
+    const isInTemp = realTargetDir.startsWith(tempDir);
+    const isInHome = realTargetDir.startsWith(homeDir);
+    const isInDownloads = realTargetDir.startsWith(downloadsDir);
+    const isInDocuments = realTargetDir.startsWith(documentsDir);
+    const isInDesktop = realTargetDir.startsWith(desktopDir);
+    const isInApp = realTargetDir.startsWith(appDir);
+
+    // Block writes to application directory (prevent code modification)
+    if (isInApp) {
+      return { success: false, error: 'Cannot write to application directory' };
+    }
+
+    // Only allow writes to temp or user directories
+    if (!isInTemp && !isInHome && !isInDownloads && !isInDocuments && !isInDesktop) {
+      return { success: false, error: `Path not in allowed directory. Target: ${realTargetDir}` };
+    }
+
+    // Additional check: prevent writing to system folders (only check root-level system folders)
+    // Don't block user's Library folder (~/Library), only system /Library
+    if (process.platform === 'darwin') {
+      // macOS - block /System, /Library (but not ~/Library), /usr, /bin, /sbin, /etc
+      const systemPrefixes = ['/System', '/Library', '/usr', '/bin', '/sbin', '/etc', '/var/root'];
+      if (systemPrefixes.some(prefix => resolvedPath.startsWith(prefix))) {
+        return { success: false, error: 'Cannot write to system directories' };
+      }
+    } else if (process.platform === 'win32') {
+      // Windows - block C:\Windows, C:\Program Files
+      const lowerPath = resolvedPath.toLowerCase();
+      if (lowerPath.includes('\\windows\\') || lowerPath.includes('\\program files\\')) {
+        return { success: false, error: 'Cannot write to system directories' };
+      }
+    } else {
+      // Linux - block /usr, /bin, /sbin, /etc, /sys, /proc
+      const systemPrefixes = ['/usr', '/bin', '/sbin', '/etc', '/sys', '/proc', '/boot'];
+      if (systemPrefixes.some(prefix => resolvedPath.startsWith(prefix))) {
+        return { success: false, error: 'Cannot write to system directories' };
+      }
+    }
+
+    // Ensure directory exists
+    const dir = path.dirname(resolvedPath);
+    await fs.mkdir(dir, { recursive: true });
+
+    // Write the file
+    await fs.writeFile(resolvedPath, content, 'utf8');
+    return { success: true, path: resolvedPath };
   } catch (error) {
+    console.error('Write file error:', error);
     return { success: false, error: error.message };
   }
 });
