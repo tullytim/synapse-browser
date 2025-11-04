@@ -1,6 +1,6 @@
 {
   "name": "synapse-browser",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "An AI-native browser with Claude and Inception Labs AI integrated throughout",
   "main": "main.js",
   "scripts": {
