@@ -2670,6 +2670,220 @@ body.dark-mode .automation-dropdown .delete-automation:hover {
     background: #555;
 }
 
+/* Markdown content styling */
+.summary-body h1,
+.summary-body h2,
+.summary-body h3,
+.summary-body h4,
+.summary-body h5,
+.summary-body h6,
+#ask-page-answer h1,
+#ask-page-answer h2,
+#ask-page-answer h3,
+#ask-page-answer h4,
+#ask-page-answer h5,
+#ask-page-answer h6 {
+    margin-top: 24px;
+    margin-bottom: 16px;
+    font-weight: 600;
+    line-height: 1.25;
+    color: #1a202c;
+}
+
+.summary-body h1,
+#ask-page-answer h1 {
+    font-size: 2em;
+    border-bottom: 2px solid #e2e8f0;
+    padding-bottom: 8px;
+}
+
+.summary-body h2,
+#ask-page-answer h2 {
+    font-size: 1.5em;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 6px;
+}
+
+.summary-body h3,
+#ask-page-answer h3 {
+    font-size: 1.25em;
+}
+
+.summary-body h4,
+#ask-page-answer h4 {
+    font-size: 1em;
+}
+
+.summary-body h5,
+#ask-page-answer h5 {
+    font-size: 0.875em;
+}
+
+.summary-body h6,
+#ask-page-answer h6 {
+    font-size: 0.85em;
+    color: #718096;
+}
+
+.summary-body p,
+#ask-page-answer p {
+    margin-top: 0;
+    margin-bottom: 16px;
+    line-height: 1.7;
+}
+
+.summary-body ul,
+.summary-body ol,
+#ask-page-answer ul,
+#ask-page-answer ol {
+    margin-top: 0;
+    margin-bottom: 16px;
+    padding-left: 2em;
+}
+
+.summary-body li,
+#ask-page-answer li {
+    margin-bottom: 8px;
+    line-height: 1.6;
+}
+
+.summary-body li > p,
+#ask-page-answer li > p {
+    margin-bottom: 8px;
+}
+
+.summary-body ul ul,
+.summary-body ul ol,
+.summary-body ol ul,
+.summary-body ol ol,
+#ask-page-answer ul ul,
+#ask-page-answer ul ol,
+#ask-page-answer ol ul,
+#ask-page-answer ol ol {
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.summary-body code,
+#ask-page-answer code {
+    padding: 0.2em 0.4em;
+    margin: 0;
+    font-size: 85%;
+    background-color: #f6f8fa;
+    border-radius: 6px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+    color: #24292e;
+}
+
+.summary-body pre,
+#ask-page-answer pre {
+    padding: 16px;
+    overflow: auto;
+    font-size: 85%;
+    line-height: 1.45;
+    background-color: #f6f8fa;
+    border-radius: 6px;
+    margin-bottom: 16px;
+}
+
+.summary-body pre code,
+#ask-page-answer pre code {
+    display: block;
+    padding: 0;
+    margin: 0;
+    overflow: visible;
+    line-height: inherit;
+    word-wrap: normal;
+    background-color: transparent;
+    border: 0;
+}
+
+.summary-body a,
+#ask-page-answer a {
+    color: #0969da;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.summary-body a:hover,
+#ask-page-answer a:hover {
+    text-decoration: underline;
+}
+
+.summary-body blockquote,
+#ask-page-answer blockquote {
+    margin: 0 0 16px 0;
+    padding: 0 1em;
+    color: #57606a;
+    border-left: 4px solid #d0d7de;
+    background-color: #f6f8fa;
+    border-radius: 0 6px 6px 0;
+}
+
+.summary-body blockquote > :first-child,
+#ask-page-answer blockquote > :first-child {
+    margin-top: 8px;
+}
+
+.summary-body blockquote > :last-child,
+#ask-page-answer blockquote > :last-child {
+    margin-bottom: 8px;
+}
+
+.summary-body table,
+#ask-page-answer table {
+    border-spacing: 0;
+    border-collapse: collapse;
+    margin-bottom: 16px;
+    width: 100%;
+}
+
+.summary-body table th,
+#ask-page-answer table th {
+    padding: 8px 13px;
+    border: 1px solid #d0d7de;
+    font-weight: 600;
+    background-color: #f6f8fa;
+}
+
+.summary-body table td,
+#ask-page-answer table td {
+    padding: 8px 13px;
+    border: 1px solid #d0d7de;
+}
+
+.summary-body table tr:nth-child(2n),
+#ask-page-answer table tr:nth-child(2n) {
+    background-color: #f6f8fa;
+}
+
+.summary-body hr,
+#ask-page-answer hr {
+    height: 0.25em;
+    padding: 0;
+    margin: 24px 0;
+    background-color: #d0d7de;
+    border: 0;
+}
+
+.summary-body strong,
+#ask-page-answer strong {
+    font-weight: 600;
+}
+
+.summary-body em,
+#ask-page-answer em {
+    font-style: italic;
+}
+
+.summary-body img,
+#ask-page-answer img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+    margin: 16px 0;
+}
+
 /* Extract Overlay */
 #extract-overlay {
     position: fixed;

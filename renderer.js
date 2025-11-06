@@ -5797,38 +5797,36 @@ class TabManager {
     processMarkdownContent(content) {
         if (!content) return '';
 
-        // Remove markdown code block syntax (```html or ```language)
-        content = content.replace(/^```[\w]*\n/gm, '');
-        content = content.replace(/\n```$/gm, '');
-        content = content.replace(/```/g, '');
-
         // If the content is already HTML (starts with < and contains HTML tags)
         if (content.trim().startsWith('<') && /<\/\w+>/.test(content)) {
             return content;
         }
 
-        // Otherwise, convert basic markdown to HTML
-        // Convert headers
-        content = content.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-        content = content.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-        content = content.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+        // Configure marked for better rendering
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                breaks: true,        // Convert \n to <br>
+                gfm: true,          // Use GitHub Flavored Markdown
+                headerIds: false,   // Don't add IDs to headers
+                mangle: false,      // Don't escape autolinked email addresses
+                pedantic: false,    // Don't conform to obscure markdown.pl bugs
+                sanitize: false,    // Don't sanitize HTML (we use DOMPurify for this)
+                smartypants: false, // Don't use smart punctuation
+            });
 
-        // Convert bold and italic
-        content = content.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-        content = content.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        content = content.replace(/\*(.+?)\*/g, '<em>$1</em>');
-
-        // Convert line breaks to paragraphs
-        const paragraphs = content.split(/\n\n+/);
-        content = paragraphs.map(p => {
-            p = p.trim();
-            if (p && !p.startsWith('<')) {
-                return `<p>${p}</p>`;
+            try {
+                // Use marked to convert markdown to HTML
+                return marked.parse(content);
+            } catch (error) {
+                console.error('Error parsing markdown:', error);
+                // Fallback to returning the original content
+                return content.replace(/\n/g, '<br>');
             }
-            return p;
-        }).join('\n');
+        }
 
-        return content;
+        // Fallback if marked is not loaded (shouldn't happen)
+        console.warn('Marked library not loaded, using fallback markdown processing');
+        return content.replace(/\n/g, '<br>');
     }
 
     async summarizeCurrentPage() {
