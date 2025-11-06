@@ -5794,6 +5794,34 @@ class TabManager {
         this.showApiKeyInstructions(tabId);
     }
     
+    initializeMarkdown() {
+        // Configure marked once when initialized
+        if (typeof marked !== 'undefined' && !this.markedConfigured) {
+            marked.setOptions({
+                breaks: true,        // Convert \n to <br>
+                gfm: true,          // Use GitHub Flavored Markdown
+                headerIds: false,   // Don't add IDs to headers
+                mangle: false,      // Don't escape autolinked email addresses
+                pedantic: false,    // Don't conform to obscure markdown.pl bugs
+                sanitize: false,    // Don't sanitize HTML (we use DOMPurify for this)
+                smartypants: false  // Don't use smart punctuation
+            });
+
+            this.markedConfigured = true;
+        }
+
+        // Configure DOMPurify to allow Prism classes
+        if (typeof DOMPurify !== 'undefined' && !this.domPurifyConfigured) {
+            DOMPurify.addHook('uponSanitizeAttribute', function (node, data) {
+                // Preserve all class attributes (needed for Prism)
+                if (data.attrName === 'class') {
+                    data.keepAttr = true;
+                }
+            });
+            this.domPurifyConfigured = true;
+        }
+    }
+
     processMarkdownContent(content) {
         if (!content) return '';
 
@@ -5802,30 +5830,20 @@ class TabManager {
             return content;
         }
 
-        // Configure marked for better rendering
-        if (typeof marked !== 'undefined') {
-            marked.setOptions({
-                breaks: true,        // Convert \n to <br>
-                gfm: true,          // Use GitHub Flavored Markdown
-                headerIds: false,   // Don't add IDs to headers
-                mangle: false,      // Don't escape autolinked email addresses
-                pedantic: false,    // Don't conform to obscure markdown.pl bugs
-                sanitize: false,    // Don't sanitize HTML (we use DOMPurify for this)
-                smartypants: false, // Don't use smart punctuation
-            });
+        // Initialize marked if not already done
+        this.initializeMarkdown();
 
+        // Use marked to convert markdown to HTML
+        if (typeof marked !== 'undefined') {
             try {
-                // Use marked to convert markdown to HTML
                 return marked.parse(content);
             } catch (error) {
                 console.error('Error parsing markdown:', error);
-                // Fallback to returning the original content
                 return content.replace(/\n/g, '<br>');
             }
         }
 
-        // Fallback if marked is not loaded (shouldn't happen)
-        console.warn('Marked library not loaded, using fallback markdown processing');
+        // Fallback if marked is not loaded
         return content.replace(/\n/g, '<br>');
     }
 
@@ -6268,6 +6286,12 @@ class TabManager {
                     streamedContent += data.text;
                     const processedContent = this.processMarkdownContent(streamedContent);
                     targetContent.innerHTML = DOMPurify.sanitize(processedContent);
+
+                    // Apply Prism highlighting
+                    if (typeof Prism !== 'undefined') {
+                        Prism.highlightAllUnder(targetContent);
+                    }
+
                     this.attachLinkHandlersToClaudeResults(searchTabId);
                 }
             });
@@ -6281,6 +6305,12 @@ class TabManager {
                 if (targetContent) {
                     const processedContent = this.processMarkdownContent(data.fullContent);
                     targetContent.innerHTML = DOMPurify.sanitize(processedContent);
+
+                    // Apply Prism highlighting to all code blocks
+                    if (typeof Prism !== 'undefined') {
+                        Prism.highlightAllUnder(targetContent);
+                    }
+
                     this.attachLinkHandlersToClaudeResults(searchTabId);
                 }
 

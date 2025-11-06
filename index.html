@@ -6,6 +6,8 @@
     <title>Claude Browser</title>
     <link rel="icon" type="image/png" href="assets/icons8-claude-ai-512.png">
     <link rel="stylesheet" href="styles.css">
+    <!-- Prism.js for syntax highlighting -->
+    <link rel="stylesheet" href="node_modules/prismjs/themes/prism.min.css">
 </head>
 <body>
     <div id="browser-container">
@@ -548,6 +550,19 @@
 
     <!-- DOMPurify for XSS protection -->
     <script src="node_modules/dompurify/dist/purify.min.js"></script>
+
+    <!-- Prism.js for syntax highlighting -->
+    <script src="node_modules/prismjs/prism.js"></script>
+    <script src="node_modules/prismjs/components/prism-javascript.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-python.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-java.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-typescript.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-jsx.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-tsx.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-css.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-json.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-bash.min.js"></script>
+    <script src="node_modules/prismjs/components/prism-sql.min.js"></script>
 
     <!-- Marked for markdown rendering -->
     <script src="node_modules/marked/lib/marked.umd.js"></script>

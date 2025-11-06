@@ -2341,18 +2341,36 @@ body.incognito-mode .autocomplete-item-text {
 }
 
 .response-content pre {
-    background: #f4f4f4;
-    padding: 12px;
-    border-radius: 4px;
+    background: #f6f8fa;
+    padding: 16px;
+    border-radius: 6px;
     overflow-x: auto;
-    margin: 12px 0;
+    margin: 16px 0;
+    line-height: 1.45;
+    font-size: 85%;
+}
+
+.response-content pre code {
+    display: block;
+    padding: 0;
+    margin: 0;
+    background-color: transparent;
+    border-radius: 0;
+    color: inherit; /* Allow syntax highlighting colors */
 }
 
 .response-content code {
-    background: #f4f4f4;
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-family: 'Courier New', Courier, monospace;
+    background: #f6f8fa;
+    padding: 0.2em 0.4em;
+    border-radius: 6px;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+    font-size: 85%;
+    color: #24292e;
+}
+
+/* Ensure Prism styles work in response-content */
+.response-content pre code[class*="language-"] {
+    background-color: transparent;
 }
 
 .response-content ul,
@@ -2796,6 +2814,13 @@ body.dark-mode .automation-dropdown .delete-automation:hover {
     word-wrap: normal;
     background-color: transparent;
     border: 0;
+    color: inherit; /* Allow syntax highlighting colors */
+}
+
+/* Ensure Prism styles work properly */
+.summary-body pre code[class*="language-"],
+#ask-page-answer pre code[class*="language-"] {
+    background-color: transparent;
 }
 
 .summary-body a,

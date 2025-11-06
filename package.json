@@ -49,6 +49,7 @@
     "electron-updater": "^6.1.7",
     "marked": "^16.4.1",
     "playwright-core": "^1.55.0",
+    "prismjs": "^1.30.0",
     "puppeteer-core": "^24.22.3",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
