@@ -1,4 +1,4 @@
-# Synapse Browser
+# Claude Browser 
 
 An AI-powered web browser built with Electron that integrates Claude AI and Inception Labs Mercury for intelligent search, webpage summarization, smart bookmarking, and advanced privacy controls.
 
@@ -6,7 +6,7 @@ An AI-powered web browser built with Electron that integrates Claude AI and Ince
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-green.svg)
 ![Version](https://img.shields.io/badge/version-1.0.5-brightgreen.svg)
-![Build Status](https://github.com/tullytim/synapse-browser/actions/workflows/build.yml/badge.svg)
+![Build Status](https://github.com/tullytim/claude-browser/actions/workflows/build.yml/badge.svg)
 
 ## Features
 
@@ -23,8 +23,8 @@ An AI-powered web browser built with Electron that integrates Claude AI and Ince
 - **Downloads manager** with progress tracking and file management
 
 ### 🤖 AI-Powered Features
-- **Claude AI Search** - Type natural language queries in the address bar to search with Claude or Inception
-- **Dual address bars** - Separate Claude/Inception AI search and Google search bars
+- **Claude AI Search** - Type natural language queries in the address bar to search with Claude
+- **Dual address bars** - Separate Claude AI search and Google search bars
 - **Page Summarization** - Single-page or multi-page summaries with AI
   - Single-page summary for current page analysis
   - Multi-page summary to analyze and synthesize content across multiple tabs
@@ -81,7 +81,7 @@ An AI-powered web browser built with Electron that integrates Claude AI and Ince
 - **Rich context menus** for:
   - Links (open in new tab/window, copy link, incognito options)
   - Images (save, copy, open in new tab)
-  - Text selection (copy, search with Claude/Inception)
+  - Text selection (copy, search with Claude)
   - Page actions (back, forward, reload, view source, inspect)
   - Tabs (reload, duplicate, pin, mute, move to new window, close options)
   - URL bar (cut, copy, paste, delete)
@@ -126,8 +126,8 @@ An AI-powered web browser built with Electron that integrates Claude AI and Ince
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/tullytim/synapse-browser.git
-cd synapse-browser
+git clone https://github.com/tullytim/claude-browser.git
+cd claude-browser
 ```
 
 2. Install dependencies:
@@ -157,13 +157,13 @@ If you download a pre-built `.dmg` or `.app` and macOS says it's "damaged" or "c
 
 **Option 1: Remove quarantine attribute (Recommended)**
 ```bash
-xattr -cr "/Applications/Synapse Browser.app"
+xattr -cr "/Applications/Claude Browser.app"
 ```
 
 **Option 2: Allow in System Preferences**
 1. Try to open the app (it will fail)
 2. Go to System Preferences → Security & Privacy → General
-3. Click "Open Anyway" next to the Synapse Browser message
+3. Click "Open Anyway" next to the Claude Browser message
 
 **Option 3: Disable Gatekeeper temporarily (Not recommended)**
 ```bash
@@ -268,8 +268,8 @@ If the Windows installer doesn't launch or seems to do nothing:
    - Temporarily disable antivirus and try again
 
 2. **Use the Portable version:**
-   - Look for `Synapse Browser Setup 1.0.5.exe` (installer)
-   - OR use `Synapse Browser 1.0.5.exe` (portable - no install needed)
+   - Look for `Claude Browser Setup 1.0.5.exe` (installer)
+   - OR use `Claude Browser 1.0.5.exe` (portable - no install needed)
    - The portable version doesn't require installation
 
 3. **Run as Administrator:**
@@ -300,7 +300,7 @@ If the Windows installer doesn't launch or seems to do nothing:
 - **Focus Address Bar**: Cmd/Ctrl + L
 
 ### AI Features
-- **Claude/Inception Search**: Type a question or topic in the main address bar (anything that's not a URL)
+- **Claude Search**: Type a question or topic in the main address bar (anything that's not a URL)
 - **Google Search**: Use the dedicated Google search bar for traditional web search
 - **Summarize Page**:
   - Click "✨ Interact" → "📄 Summarize Current Page" for single-page summary
@@ -420,7 +420,7 @@ The tracker blocker intelligently blocks third-party tracking while preserving s
 **Toggle on/off from the toolbar** - Track your privacy preferences
 
 ### Web Automation System
-Synapse Browser includes a powerful automation recording and playback system:
+Claude Browser includes a powerful automation recording and playback system:
 
 **Recording Automations**:
 - Records all user interactions including clicks, typing, scrolls, and navigation
@@ -489,7 +489,7 @@ npm run test:coverage
 ## Project Structure
 
 ```
-synapse-browser/
+claude-browser/
 ├── main.js                      # Main Electron process & API integration
 ├── renderer.js                  # Browser UI, tab management, and features
 ├── rpa-engine.js               # Web automation recording and playback engine
@@ -614,7 +614,7 @@ SOFTWARE.
 ## Support
 
 For issues, questions, or suggestions:
-- Open an issue on [GitHub](https://github.com/tullytim/synapse-browser/issues)
+- Open an issue on [GitHub](https://github.com/tullytim/claude-browser/issues)
 - Contact: tim@menlovc.com
 
 ## Changelog
@@ -628,7 +628,7 @@ For issues, questions, or suggestions:
 - 📝 Enhanced documentation and security guidelines
 
 ### Previous Versions
-See [GitHub Releases](https://github.com/tullytim/synapse-browser/releases) for full changelog.
+See [GitHub Releases](https://github.com/tullytim/claude-browser/releases) for full changelog.
 
 ---
 

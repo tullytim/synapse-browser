@@ -24,8 +24,33 @@
 
 // RPA Engine will be loaded globally from rpa-engine.js
 
+// SECURITY: Validate favicon URLs to prevent script injection via data:image/svg+xml
+function isSafeFaviconUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    // Allow http(s) URLs (browser fetches them safely)
+    if (url.startsWith('https://') || url.startsWith('http://')) return true;
+    // Allow safe raster data: URIs only (no SVG which can contain scripts)
+    if (url.startsWith('data:image/png') || url.startsWith('data:image/jpeg') ||
+        url.startsWith('data:image/gif') || url.startsWith('data:image/webp') ||
+        url.startsWith('data:image/x-icon') || url.startsWith('data:image/vnd.microsoft.icon')) return true;
+    return false;
+}
+
 // Configuration
 const BROWSER_NAME = 'Synapse';
+
+// Theme definitions
+const THEMES = {
+    light: { name: 'Light', class: 'theme-light' },
+    dark: { name: 'Dark', class: 'theme-dark' },
+    blue: { name: 'Ocean Blue', class: 'theme-blue' },
+    pink: { name: 'Pink', class: 'theme-pink' },
+    purple: { name: 'Midnight Purple', class: 'theme-purple' },
+    green: { name: 'Forest Green', class: 'theme-green' },
+    orange: { name: 'Sunset Orange', class: 'theme-orange' },
+    monokai: { name: 'Monokai', class: 'theme-monokai' }
+};
+const DEFAULT_THEME = 'light';
 
 // Tab management
 class TabManager {
@@ -149,6 +174,7 @@ class TabManager {
         this.backBtn = document.getElementById('back-btn');
         this.forwardBtn = document.getElementById('forward-btn');
         this.refreshBtn = document.getElementById('refresh-btn');
+        this.homeBtn = document.getElementById('home-btn');
         // Go button removed - no longer needed
         this.newTabBtn = document.getElementById('new-tab-btn');
         this.apiKeyWarning = document.getElementById('api-key-warning');
@@ -460,16 +486,23 @@ class TabManager {
 
         // Check if tab restoration is enabled
         const settings = await this.loadSettings();
-        this.isRestoreEnabled = settings.restoreTabsOnStartup;
+        this.isRestoreEnabled = settings.restoreTabsOnStartup || settings.startupBehavior === 'restore';
+        this.homepage = settings.homepage || '';
+        this.startupBehavior = settings.startupBehavior || 'newTab';
+
+        // Apply saved theme early to prevent flash of unstyled content
+        this.applyTheme(settings.theme || DEFAULT_THEME);
 
         // Apply third-party cookie blocking if enabled
         if (settings.blockThirdPartyCookies) {
             await window.electronAPI.setThirdPartyCookieBlocking(true);
         }
 
-        // Try to load saved tab state if enabled
+        // Try to load saved tab state if restore behavior is enabled
         try {
-            const tabsRestored = await this.loadTabState();
+            if (this.startupBehavior === 'restore') {
+                const tabsRestored = await this.loadTabState();
+            }
         } catch (err) {
             console.error('Error loading tab state:', err);
         }
@@ -479,7 +512,12 @@ class TabManager {
         setTimeout(() => {
             if (this.tabs.length === 0) {
                 console.log('No tabs found, creating initial tab');
-                this.createTab();
+                // Use homepage if set and startup behavior is 'homepage'
+                if (this.startupBehavior === 'homepage' && this.homepage) {
+                    this.createTab(this.homepage);
+                } else {
+                    this.createTab();
+                }
             }
         }, 100);
 
@@ -921,6 +959,7 @@ class TabManager {
         this.backBtn.addEventListener('click', () => this.goBack());
         this.forwardBtn.addEventListener('click', () => this.goForward());
         this.refreshBtn.addEventListener('click', () => this.refresh());
+        this.homeBtn.addEventListener('click', () => this.goHome());
         this.newTabBtn.addEventListener('click', () => this.createTab());
 
         // Bookmark scroll buttons
@@ -988,6 +1027,8 @@ class TabManager {
                 this.showAskPageDialog();
             } else if (action === 'search-suggestions') {
                 await this.generateSearchSuggestions();
+            } else if (action === 'smart-bookmark') {
+                await this.createSmartBookmark();
             }
         });
 
@@ -1178,7 +1219,7 @@ class TabManager {
                 // Reset UI
                 document.querySelector('.computer-use-input').style.display = 'block';
                 computerUseStatus.classList.add('hidden');
-                computerUseLog.innerHTML = '';
+                computerUseLog.textContent = '';
                 computerUseTask.value = '';
             });
 
@@ -1192,7 +1233,7 @@ class TabManager {
                 // Show status and hide input
                 document.querySelector('.computer-use-input').style.display = 'none';
                 computerUseStatus.classList.remove('hidden');
-                computerUseLog.innerHTML = '';
+                computerUseLog.textContent = '';
                 computerUseActive = true;
                 computerUseAbort = false;
 
@@ -1236,8 +1277,11 @@ class TabManager {
                             }
 
                             // Test element detection
+                            // SECURITY: Validate coordinates are finite numbers before interpolation
+                            const safeTestX = Number.isFinite(Number(x)) ? Number(x) : 0;
+                            const safeTestY = Number.isFinite(Number(y)) ? Number(y) : 0;
                             const elementInfo = await webview.executeJavaScript(`
-                                document.elementFromPoint(${x}, ${y})?.tagName || 'No element found'
+                                document.elementFromPoint(${safeTestX}, ${safeTestY})?.tagName || 'No element found'
                             `);
                             this.addComputerUseLog(`Element at position: ${elementInfo}`, 'info');
                         } else {
@@ -1350,7 +1394,7 @@ class TabManager {
                         this.addComputerUseLog(`Executing: ${JSON.stringify(action)}`, 'info');
 
                         if (action.type === 'click') {
-                            this.addComputerUseLog(`Clicking at (${action.x}, ${action.y})`, 'info');
+                            this.addComputerUseLog(`Clicking at (${Number(action.x) || 0}, ${Number(action.y) || 0})`, 'info');
 
                                 // Standard clicking for all sites
                                 // Method 1: Try using sendInputEvent for most reliable clicking
@@ -1386,10 +1430,13 @@ class TabManager {
                             }
 
                             // Method 2: JavaScript fallback
+                            // SECURITY: Validate coordinates are finite numbers to prevent code injection
+                            const safeClickX = Number.isFinite(Number(action.x)) ? Number(action.x) : 0;
+                            const safeClickY = Number.isFinite(Number(action.y)) ? Number(action.y) : 0;
                             await webview.executeJavaScript(`
                                 (function() {
-                                    const x = ${action.x};
-                                    const y = ${action.y};
+                                    const x = ${safeClickX};
+                                    const y = ${safeClickY};
 
                                     // Find element at coordinates
                                     const element = document.elementFromPoint(x, y);
@@ -1513,7 +1560,7 @@ class TabManager {
                             await webview.executeJavaScript(`
                                 (function() {
                                     const activeElement = document.activeElement;
-                                    const text = '${action.text.replace(/'/g, "\\'")}';
+                                    const text = ${JSON.stringify(String(action.text))};
 
                                     if (activeElement && (activeElement.tagName === 'INPUT' ||
                                         activeElement.tagName === 'TEXTAREA')) {
@@ -1551,7 +1598,7 @@ class TabManager {
                             await webview.executeJavaScript(`
                                 (function() {
                                     const activeElement = document.activeElement;
-                                    const key = '${action.key}';
+                                    const key = ${JSON.stringify(String(action.key))};
 
                                     // Special handling for Enter key
                                     if (key === 'Enter') {
@@ -1638,11 +1685,26 @@ class TabManager {
                             `);
                             await new Promise(resolve => setTimeout(resolve, 500));
                         } else if (action.type === 'scroll') {
+                            // SECURITY: Validate scroll amount is a finite number
+                            const rawAmount = Number(action.amount) || 100;
+                            const safeScrollAmount = Number.isFinite(rawAmount) ? rawAmount : 100;
+                            const scrollDelta = action.direction === 'down' ? safeScrollAmount : -safeScrollAmount;
                             await webview.executeJavaScript(`
-                                window.scrollBy(0, ${action.direction === 'down' ? action.amount || 100 : -(action.amount || 100)});
+                                window.scrollBy(0, ${scrollDelta});
                             `);
                             await new Promise(resolve => setTimeout(resolve, 500));
                         } else if (action.type === 'navigate') {
+                            // Validate URL scheme to prevent javascript:/file:/data: attacks
+                            try {
+                                const navUrl = new URL(action.url);
+                                if (navUrl.protocol !== 'http:' && navUrl.protocol !== 'https:') {
+                                    this.addComputerUseLog('Blocked unsafe URL scheme: ' + navUrl.protocol, 'error');
+                                    continue;
+                                }
+                            } catch (e) {
+                                this.addComputerUseLog('Invalid navigation URL', 'error');
+                                continue;
+                            }
                             webview.loadURL(action.url);
                             await new Promise(resolve => setTimeout(resolve, 3000));
                         }
@@ -1674,7 +1736,7 @@ class TabManager {
                     // Reset UI but keep sidebar open
                     document.querySelector('.computer-use-input').style.display = 'block';
                     computerUseStatus.classList.add('hidden');
-                    computerUseLog.innerHTML = '';
+                    computerUseLog.textContent = '';
                     computerUseTask.value = '';
                     computerUseStop.textContent = 'Stop';
                 }
@@ -1806,7 +1868,12 @@ class TabManager {
             mode: 'welcome', // 'welcome', 'web', 'claude'
             isIncognito: isIncognito,
             isPinned: false,
-            isMuted: false
+            isMuted: false,
+            splitView: {
+                isOpen: false,
+                url: null,
+                webview: null
+            }
         };
         
         this.tabs.push(tab);
@@ -1819,7 +1886,7 @@ class TabManager {
         tabElement.innerHTML = `
             ${isIncognito ? '<span class="incognito-icon">🕵️</span>' : ''}
             <img class="tab-favicon" style="display: none;" width="16" height="16">
-            <span class="tab-title">${tab.title}</span>
+            <span class="tab-title">${this.escapeHtml(tab.title)}</span>
             <span class="tab-audio-indicator" style="display: none;" title="Tab is playing audio - Click to mute"></span>
             <button class="tab-close" title="Close tab (Cmd+W / Ctrl+W)">×</button>
         `;
@@ -1828,7 +1895,7 @@ class TabManager {
         const tooltip = document.createElement('div');
         tooltip.className = 'tab-tooltip';
         tooltip.innerHTML = `
-            <div class="tooltip-title">${tab.title}</div>
+            <div class="tooltip-title">${this.escapeHtml(tab.title)}</div>
             <div class="tooltip-memory">Memory: calculating...</div>
         `;
         tabElement.appendChild(tooltip);
@@ -1990,6 +2057,12 @@ class TabManager {
     closeTab(tabId) {
         const tabIndex = this.tabs.findIndex(t => t.id === tabId);
         if (tabIndex === -1) return;
+
+        // Clean up split view if open
+        const tabToClose = this.tabs[tabIndex];
+        if (tabToClose.splitView && tabToClose.splitView.isOpen) {
+            this.closeSplitView(tabToClose);
+        }
 
         // Close window if it's the last tab
         if (this.tabs.length === 1) {
@@ -2170,6 +2243,11 @@ class TabManager {
         const tab = this.tabs.find(t => t.id === tabId);
         if (!tab) return;
 
+        // SECURITY: Validate favicon URL to prevent SVG script injection
+        if (faviconUrl && !isSafeFaviconUrl(faviconUrl)) {
+            faviconUrl = null;
+        }
+
         // Debug all favicon updates to track issues
         // Add cache-busting to favicon URL to force reload
         if (faviconUrl && !faviconUrl.startsWith('data:') && !faviconUrl.includes('_cb=')) {
@@ -2286,17 +2364,12 @@ class TabManager {
             return true;
         }
 
-        // Check for file URLs
-        if (/^file:\/\//i.test(str)) {
-            return true;
+        // SECURITY: Block all dangerous URL schemes
+        if (/^(javascript|vbscript|data|file|blob):/i.test(str)) {
+            return false;
         }
 
-        // Check for data URLs
-        if (/^data:/i.test(str)) {
-            return true;
-        }
-
-        // Check for external protocol schemes
+        // Check for external protocol schemes (handled by OS, not loaded in webview)
         if (/^(spotify|mailto|tel|sms|facetime|zoom|slack|discord|steam|vscode|notion|obsidian):/i.test(str)) {
             return true;
         }
@@ -2325,14 +2398,9 @@ class TabManager {
             return str;
         }
 
-        // Check for file URLs - return as-is
-        if (/^file:\/\//i.test(str)) {
-            return str;
-        }
-
-        // Check for data URLs - return as-is
-        if (/^data:/i.test(str)) {
-            return str;
+        // SECURITY: Block all dangerous URL schemes — convert to search query
+        if (/^(javascript|vbscript|data|file|blob):/i.test(str)) {
+            return `https://www.google.com/search?q=${encodeURIComponent(str)}`;
         }
 
         // Check for external protocol schemes - return as-is
@@ -2573,7 +2641,7 @@ class TabManager {
             claudeResults.innerHTML = DOMPurify.sanitize(`
                 <div class="error">
                     <h3>Error generating simplified summary</h3>
-                    <p>${data.error}</p>
+                    <p>${this.escapeHtml(data.error)}</p>
                 </div>
             `);
             this.updateTabTitle(newTabId, '❌ Error');
@@ -2654,7 +2722,7 @@ class TabManager {
             claudeResults.innerHTML = DOMPurify.sanitize(`
                 <div class="error">
                     <h3>Error generating TLDR</h3>
-                    <p>${data.error}</p>
+                    <p>${this.escapeHtml(data.error)}</p>
                 </div>
             `);
             this.updateTabTitle(newTabId, '❌ Error');
@@ -3210,14 +3278,17 @@ class TabManager {
         // Show extraction overlay
         const extractOverlay = document.getElementById('extract-overlay');
         const extractBody = extractOverlay.querySelector('.extract-body');
-        extractBody.innerHTML = `<div class="loading">Extracting ${mediaType} files from page...</div>`;
+        extractBody.innerHTML = `<div class="loading">Extracting ${this.escapeHtml(mediaType)} files from page...</div>`;
         extractOverlay.classList.remove('hidden');
 
         try {
             // Extract media URLs from the page
+            // SECURITY: Sanitize mediaType before interpolating into executeJavaScript
+            // Only allow alphanumeric characters to prevent code injection
+            const safeMediaType = mediaType.replace(/[^a-zA-Z0-9]/g, '');
             const mediaData = await webview.executeJavaScript(`
                 (function() {
-                    const mediaType = '${mediaType}'.toLowerCase();
+                    const mediaType = '${safeMediaType}'.toLowerCase();
                     const results = [];
 
                     // Define media type mappings
@@ -3358,72 +3429,107 @@ class TabManager {
             `);
 
             if (!mediaData || mediaData.length === 0) {
-                extractBody.innerHTML = `<p>No ${mediaType} files found on this page.</p>`;
+                extractBody.textContent = '';
+                const p = document.createElement('p');
+                p.textContent = `No ${safeMediaType} files found on this page.`;
+                extractBody.appendChild(p);
                 return;
             }
 
-            // Display extracted media
-            let html = `<h3>Found ${mediaData.length} ${mediaType} file(s)</h3><div class="media-grid">`;
+            // SECURITY: Build media display using DOM APIs to prevent XSS
+            // via attacker-controlled URLs, alt text, and filenames from the page
+            extractBody.textContent = '';
+            const heading = document.createElement('h3');
+            heading.textContent = `Found ${mediaData.length} ${safeMediaType} file(s)`;
+            extractBody.appendChild(heading);
+
+            const grid = document.createElement('div');
+            grid.className = 'media-grid';
 
             mediaData.forEach((item, index) => {
-                const filename = item.url.split('/').pop().split('?')[0] || `${mediaType}_${index + 1}`;
+                const filename = item.url.split('/').pop().split('?')[0] || `${safeMediaType}_${index + 1}`;
+                const mediaItem = document.createElement('div');
+                mediaItem.className = 'media-item';
 
+                // Create media element based on type
                 if (item.type === 'image') {
-                    html += `
-                        <div class="media-item">
-                            <img src="${item.url}" alt="${item.alt}" loading="lazy" />
-                            <div class="media-info">
-                                <div class="media-filename">${filename}</div>
-                                ${item.width && item.height ? `<div class="media-meta">${item.width}x${item.height}</div>` : ''}
-                                <a href="${item.url}" download="${filename}" class="download-btn">Download</a>
-                            </div>
-                        </div>
-                    `;
+                    const img = document.createElement('img');
+                    img.src = item.url;
+                    img.alt = item.alt || '';
+                    img.loading = 'lazy';
+                    mediaItem.appendChild(img);
                 } else if (item.type === 'video') {
-                    html += `
-                        <div class="media-item">
-                            <video src="${item.url}" controls></video>
-                            <div class="media-info">
-                                <div class="media-filename">${filename}</div>
-                                ${item.duration ? `<div class="media-meta">${Math.round(item.duration)}s</div>` : ''}
-                                <a href="${item.url}" download="${filename}" class="download-btn">Download</a>
-                            </div>
-                        </div>
-                    `;
+                    const video = document.createElement('video');
+                    video.src = item.url;
+                    video.controls = true;
+                    mediaItem.appendChild(video);
                 } else if (item.type === 'audio') {
-                    html += `
-                        <div class="media-item">
-                            <audio src="${item.url}" controls></audio>
-                            <div class="media-info">
-                                <div class="media-filename">${filename}</div>
-                                ${item.duration ? `<div class="media-meta">${Math.round(item.duration)}s</div>` : ''}
-                                <a href="${item.url}" download="${filename}" class="download-btn">Download</a>
-                            </div>
-                        </div>
-                    `;
+                    const audio = document.createElement('audio');
+                    audio.src = item.url;
+                    audio.controls = true;
+                    mediaItem.appendChild(audio);
                 } else {
-                    html += `
-                        <div class="media-item">
-                            <div class="file-icon">📄</div>
-                            <div class="media-info">
-                                <div class="media-filename">${filename}</div>
-                                <a href="${item.url}" download="${filename}" class="download-btn">Download</a>
-                            </div>
-                        </div>
-                    `;
+                    const icon = document.createElement('div');
+                    icon.className = 'file-icon';
+                    icon.textContent = '\uD83D\uDCC4';
+                    mediaItem.appendChild(icon);
                 }
+
+                // Create info section
+                const info = document.createElement('div');
+                info.className = 'media-info';
+
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'media-filename';
+                nameDiv.textContent = filename;
+                info.appendChild(nameDiv);
+
+                // Add dimensions/duration metadata
+                if (item.type === 'image' && item.width && item.height) {
+                    const meta = document.createElement('div');
+                    meta.className = 'media-meta';
+                    meta.textContent = `${item.width}x${item.height}`;
+                    info.appendChild(meta);
+                } else if ((item.type === 'video' || item.type === 'audio') && item.duration) {
+                    const meta = document.createElement('div');
+                    meta.className = 'media-meta';
+                    meta.textContent = `${Math.round(item.duration)}s`;
+                    info.appendChild(meta);
+                }
+
+                const downloadLink = document.createElement('a');
+                // SECURITY: Validate URL scheme before setting href (prevent javascript: execution)
+                const itemUrlLower = (item.url || '').toLowerCase().trim();
+                if (itemUrlLower.startsWith('http:') || itemUrlLower.startsWith('https:') ||
+                    itemUrlLower.startsWith('data:image/') || itemUrlLower.startsWith('data:video/') ||
+                    itemUrlLower.startsWith('data:audio/') || itemUrlLower.startsWith('blob:http')) {
+                    downloadLink.href = item.url;
+                } else {
+                    downloadLink.href = '#';
+                    downloadLink.title = 'Download blocked: unsafe URL scheme';
+                }
+                downloadLink.download = filename;
+                downloadLink.className = 'download-btn';
+                downloadLink.textContent = 'Download';
+                info.appendChild(downloadLink);
+
+                mediaItem.appendChild(info);
+                grid.appendChild(mediaItem);
             });
 
-            html += '</div>';
-            extractBody.innerHTML = html;
+            extractBody.appendChild(grid);
 
         } catch (error) {
-            extractBody.innerHTML = `
-                <div class="error">
-                    <h3>Error extracting media</h3>
-                    <p>${error.message}</p>
-                </div>
-            `;
+            extractBody.textContent = '';
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error';
+            const h3 = document.createElement('h3');
+            h3.textContent = 'Error extracting media';
+            const p = document.createElement('p');
+            p.textContent = error.message;
+            errorDiv.appendChild(h3);
+            errorDiv.appendChild(p);
+            extractBody.appendChild(errorDiv);
         }
     }
 
@@ -4145,7 +4251,7 @@ class TabManager {
                             <div class="error-title">${errorTitle}</div>
                             <div class="error-message">${errorMessage}</div>
 
-                            <div class="error-url">${e.validatedURL}</div>
+                            <div class="error-url">${this.escapeHtml(e.validatedURL)}</div>
 
                             <div class="action-buttons">
                                 <button class="btn btn-primary" onclick="location.reload()">
@@ -4199,8 +4305,27 @@ class TabManager {
             webview.addEventListener('devtools-closed', () => {
             });
 
+            // Handle Cmd+click / Ctrl+click on links (sent from webview-preload via IPC)
+            webview.addEventListener('ipc-message', (e) => {
+                if (e.channel === 'open-link-in-new-tab') {
+                    const url = e.args[0];
+                    if (url && (url.startsWith('http:') || url.startsWith('https:'))) {
+                        this.createTab(url);
+                    }
+                }
+            });
+
             // Handle new window requests
             webview.addEventListener('new-window', (e) => {
+                // SECURITY: Block dangerous URL schemes in all new-window requests
+                const urlLower = (e.url || '').toLowerCase().trim();
+                if (urlLower.startsWith('javascript:') || urlLower.startsWith('data:') ||
+                    urlLower.startsWith('file:') || urlLower.startsWith('blob:') ||
+                    urlLower.startsWith('vbscript:')) {
+                    e.preventDefault();
+                    return;
+                }
+
                 // For popup windows, allow them to open naturally (don't prevent default)
                 // This allows OAuth popups to work with proper window.opener support
                 if (e.disposition === 'new-window') {
@@ -4229,8 +4354,16 @@ class TabManager {
                 tab.redirectChain.push(e.newURL);
 
                 // Update address bar immediately with redirect target
-                this.addressBar.value = e.newURL;
-                tab.url = e.newURL;
+                // Validate scheme before storing redirect URL
+                try {
+                    const redirectUrl = new URL(e.newURL);
+                    if (['http:', 'https:'].includes(redirectUrl.protocol)) {
+                        this.addressBar.value = e.newURL;
+                        tab.url = e.newURL;
+                    }
+                } catch(err) {
+                    // Invalid URL, don't update
+                }
             });
 
             // Handle navigation
@@ -4275,7 +4408,10 @@ class TabManager {
 
                             if (openerTab && openerTab.webview) {
                                 // Navigate opener to the callback URL if it's on the same domain
-                                if (url.startsWith(openerDomain) && url !== tab.openerUrl) {
+                                // SECURITY: Use strict origin comparison instead of startsWith to prevent subdomain confusion
+                                let urlOrigin;
+                                try { urlOrigin = new URL(url).origin; } catch(e) { urlOrigin = null; }
+                                if (urlOrigin && urlOrigin === openerDomain && url !== tab.openerUrl) {
                                     openerTab.webview.src = url;
                                 } else {
                                     openerTab.webview.reload();
@@ -4332,6 +4468,17 @@ class TabManager {
             webview.addEventListener('page-favicon-updated', (e) => {
                 if (e.favicons && e.favicons.length > 0) {
                     this.updateTabFavicon(tabId, e.favicons[0]);
+                }
+            });
+
+            // Link preview - show URL when hovering over links
+            webview.addEventListener('update-target-url', (e) => {
+                const linkPreview = document.getElementById('link-preview');
+                if (e.url) {
+                    linkPreview.textContent = e.url;
+                    linkPreview.classList.remove('hidden');
+                } else {
+                    linkPreview.classList.add('hidden');
                 }
             });
 
@@ -5466,13 +5613,17 @@ class TabManager {
 
                 // Try to find a parent anchor element or clickable element if no direct linkURL
                 // Run this even if text is selected (text might be inside a link)
+                let linkText = params.linkText || '';
                 if (!linkUrl) {
                     try {
                         // Execute JavaScript in the webview to find any anchor element at the click position
+                        // SECURITY: Validate coordinates are finite numbers before interpolation
+                        const ctxX1 = Number.isFinite(Number(params.x)) ? Number(params.x) : 0;
+                        const ctxY1 = Number.isFinite(Number(params.y)) ? Number(params.y) : 0;
                         const result = await webview.executeJavaScript(`
                             (() => {
-                                const x = ${params.x};
-                                const y = ${params.y};
+                                const x = ${ctxX1};
+                                const y = ${ctxY1};
 
                                 // Get all elements at this point (in case of overlapping elements)
                                 const elements = document.elementsFromPoint(x, y);
@@ -5486,24 +5637,24 @@ class TabManager {
                                     while (current && current !== document.documentElement && depth < maxDepth) {
                                         // Check for anchor tags
                                         if (current.tagName === 'A' && current.href) {
-                                            return current.href;
+                                            return { url: current.href, text: current.textContent.trim() };
                                         }
 
                                         // Check for clickable elements with various attributes
                                         if (current.href) {
-                                            return current.href;
+                                            return { url: current.href, text: current.textContent.trim() };
                                         }
 
                                         // Check data attributes commonly used for links
                                         if (current.dataset) {
                                             if (current.dataset.href) {
-                                                return current.dataset.href;
+                                                return { url: current.dataset.href, text: current.textContent.trim() };
                                             }
                                             if (current.dataset.url) {
-                                                return current.dataset.url;
+                                                return { url: current.dataset.url, text: current.textContent.trim() };
                                             }
                                             if (current.dataset.link) {
-                                                return current.dataset.link;
+                                                return { url: current.dataset.link, text: current.textContent.trim() };
                                             }
                                         }
 
@@ -5511,7 +5662,7 @@ class TabManager {
                                         if (current.getAttribute && current.getAttribute('role') === 'link') {
                                             const ariaLabel = current.getAttribute('aria-label');
                                             if (ariaLabel && ariaLabel.startsWith('http')) {
-                                                return ariaLabel;
+                                                return { url: ariaLabel, text: current.textContent.trim() };
                                             }
                                         }
 
@@ -5520,7 +5671,7 @@ class TabManager {
                                         if (onclick) {
                                             const urlMatch = onclick.match(/(?:window\\.location|location\\.href|window\\.open)\\s*=\\s*["']([^"']+)["']/);
                                             if (urlMatch && urlMatch[1]) {
-                                                return urlMatch[1];
+                                                return { url: urlMatch[1], text: current.textContent.trim() };
                                             }
                                         }
 
@@ -5533,8 +5684,35 @@ class TabManager {
                             })()
                         `);
                         if (result) {
-                            linkUrl = result;
+                            linkUrl = result.url;
+                            linkText = result.text || '';
                         }
+                    } catch (err) {
+                    }
+                } else if (linkUrl && !linkText) {
+                    // We have a linkUrl from params but no text, try to get the link text
+                    try {
+                        // SECURITY: Validate coordinates are finite numbers before interpolation
+                        const ctxX2 = Number.isFinite(Number(params.x)) ? Number(params.x) : 0;
+                        const ctxY2 = Number.isFinite(Number(params.y)) ? Number(params.y) : 0;
+                        const text = await webview.executeJavaScript(`
+                            (() => {
+                                const x = ${ctxX2};
+                                const y = ${ctxY2};
+                                const elements = document.elementsFromPoint(x, y);
+                                for (let element of elements) {
+                                    let current = element;
+                                    while (current && current !== document.documentElement) {
+                                        if (current.tagName === 'A') {
+                                            return current.textContent.trim();
+                                        }
+                                        current = current.parentElement;
+                                    }
+                                }
+                                return '';
+                            })()
+                        `);
+                        linkText = text || '';
                     } catch (err) {
                     }
                 }
@@ -5542,13 +5720,13 @@ class TabManager {
                 // Priority order: link > image > text > page
                 // Check for links first (unless text is selected)
                 if (linkUrl && !params.selectionText) {
-                    this.showLinkContextMenu(params.x, params.y, linkUrl);
+                    this.showLinkContextMenu(params.x, params.y, linkUrl, linkText);
                 }
                 // Show text context menu if text is selected
                 else if (params.selectionText) {
                     // Check if the selected text is also a link
                     if (linkUrl) {
-                        this.showLinkContextMenu(params.x, params.y, linkUrl);
+                        this.showLinkContextMenu(params.x, params.y, linkUrl, linkText);
                     } else {
                         this.showTextContextMenu(params.x, params.y, params.selectionText);
                     }
@@ -5600,8 +5778,8 @@ class TabManager {
                     claudeResults.innerHTML = `
                         <div class="error">
                             <h2>Unable to load page</h2>
-                            <p>${e.errorDescription || errorMessage}</p>
-                            <p class="error-url">${e.validatedURL}</p>
+                            <p>${this.escapeHtml(e.errorDescription || errorMessage)}</p>
+                            <p class="error-url">${this.escapeHtml(e.validatedURL)}</p>
                         </div>
                     `;
                     this.showClaudeResults(tabId);
@@ -5930,7 +6108,7 @@ class TabManager {
                 summaryBody.innerHTML = DOMPurify.sanitize(`
                     <div class="error">
                         <h3>Error generating summary</h3>
-                        <p>${data.error}</p>
+                        <p>${this.escapeHtml(data.error)}</p>
                     </div>
                 `);
                 window.electronAPI.removeSummaryStreamListeners();
@@ -5944,7 +6122,7 @@ class TabManager {
             summaryBody.innerHTML = DOMPurify.sanitize(`
                 <div class="error">
                     <h3>Error extracting page content</h3>
-                    <p>${error.message}</p>
+                    <p>${this.escapeHtml(error.message)}</p>
                 </div>
             `);
         }
@@ -5990,15 +6168,17 @@ class TabManager {
             const item = document.createElement('div');
             item.className = 'tab-preview-item';
 
-            const favicon = tab.favicon ? `<img src="${tab.favicon}" alt="">` : '<img src="assets/default-favicon.png" alt="">';
+            const faviconImg = document.createElement('img');
+            faviconImg.src = (tab.favicon && isSafeFaviconUrl(tab.favicon)) ? tab.favicon : 'assets/default-favicon.png';
+            faviconImg.alt = '';
 
             item.innerHTML = `
-                ${favicon}
                 <div style="flex: 1; min-width: 0;">
-                    <div class="tab-title">${tab.title || 'Untitled'}</div>
-                    <div class="tab-url">${tab.url}</div>
+                    <div class="tab-title">${this.escapeHtml(tab.title || 'Untitled')}</div>
+                    <div class="tab-url">${this.escapeHtml(tab.url)}</div>
                 </div>
             `;
+            item.prepend(faviconImg);
 
             previewList.appendChild(item);
         });
@@ -6110,7 +6290,7 @@ class TabManager {
                 summaryBody.innerHTML = DOMPurify.sanitize(`
                     <div class="error">
                         <h3>Error generating summary</h3>
-                        <p>${data.error}</p>
+                        <p>${this.escapeHtml(data.error)}</p>
                     </div>
                 `);
                 window.electronAPI.removeSummaryStreamListeners();
@@ -6126,7 +6306,7 @@ class TabManager {
             summaryBody.innerHTML = `
                 <div class="error">
                     <h3>Error during multi-page summary</h3>
-                    <p>${error.message}</p>
+                    <p>${this.escapeHtml(error.message)}</p>
                 </div>
             `;
         }
@@ -6215,20 +6395,23 @@ class TabManager {
 
         // Get selected model to determine which API to use
         const model = this.getSelectedModel();
-        const isInception = model === 'mercury';
+        const isInception = model === 'mercury-2';
 
         // Check if Inception Labs API key is set when using Mercury
         if (isInception) {
-            const inceptionKeyResult = await window.electronAPI.getInceptionApiKey();
-            if (!inceptionKeyResult.apiKey || inceptionKeyResult.apiKey.trim() === '') {
+            const inceptionKeyResult = await window.electronAPI.getInceptionApiKeyStatus();
+            if (!inceptionKeyResult.hasKey) {
                 claudeResults.innerHTML = `
                     <div class="error">
                         <h2>Inception Labs API Key Required</h2>
                         <p>You need to set your Inception Labs API key to use the Mercury model.</p>
                         <p>Please go to Settings (⚙️) and add your Inception Labs API key.</p>
-                        <button onclick="document.getElementById('settings-btn').click()" style="margin-top: 12px; padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">Open Settings</button>
+                        <button id="open-settings-for-inception" style="margin-top: 12px; padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">Open Settings</button>
                     </div>
                 `;
+                claudeResults.querySelector('#open-settings-for-inception').addEventListener('click', () => {
+                    document.getElementById('settings-btn').click();
+                });
                 this.updateTabTitle(searchTabId, 'Error: API Key Required');
                 return;
             }
@@ -6267,7 +6450,7 @@ class TabManager {
         const searchLabel = isInception ? 'Inception Labs Mercury Search' : 'Claude AI Search';
         claudeResults.innerHTML = `
             <div class="claude-response">
-                <div class="query-header">${searchLabel}: "${query}"</div>
+                <div class="query-header">${this.escapeHtml(searchLabel)}: "${this.escapeHtml(query)}"</div>
                 <div class="response-content"></div>
             </div>
         `;
@@ -6332,7 +6515,7 @@ class TabManager {
                     targetResults.innerHTML = DOMPurify.sanitize(`
                         <div class="error">
                             <h2>Error</h2>
-                            <p>${data.error}</p>
+                            <p>${this.escapeHtml(data.error)}</p>
                             <p>Please check your Inception Labs API key in Settings.</p>
                         </div>
                     `);
@@ -6405,8 +6588,8 @@ class TabManager {
                     targetResults.innerHTML = `
                         <div class="error">
                             <h2>Error</h2>
-                            <p>${data.error}</p>
-                            ${data.error.includes('API') ? '<p>Please set your ANTHROPIC_API_KEY environment variable.</p>' : ''}
+                            <p>${this.escapeHtml(data.error)}</p>
+                            ${data.error && data.error.includes('API') ? '<p>Please set your ANTHROPIC_API_KEY environment variable.</p>' : ''}
                         </div>
                     `;
                 }
@@ -6432,7 +6615,7 @@ class TabManager {
             claudeResults.innerHTML = `
                 <div class="error">
                     <h2>Error</h2>
-                    <p>Failed to start search: ${error.message}</p>
+                    <p>Failed to start search: ${this.escapeHtml(error.message)}</p>
                 </div>
             `;
         }
@@ -6507,10 +6690,36 @@ class TabManager {
         }
         this.updateNavigationButtons();
     }
-    
+
+    goHome() {
+        // Navigate to the homepage if set, otherwise show new tab page
+        if (this.homepage) {
+            this.addressBar.value = this.homepage;
+            this.navigate();
+        } else {
+            // Show welcome/new tab page
+            const tab = this.getCurrentTab();
+            if (tab) {
+                tab.mode = 'welcome';
+                tab.url = '';
+                tab.title = 'New Tab';
+                this.addressBar.value = '';
+                this.updateTabTitle(tab.id, 'New Tab');
+
+                const content = this.tabsContent.querySelector(`[data-tab-id="${tab.id}"]`);
+                if (content) {
+                    const webview = content.querySelector('.tab-webview');
+                    if (webview) webview.style.display = 'none';
+                    content.querySelector('.tab-claude-results').style.display = 'none';
+                    content.querySelector('.tab-welcome-screen').style.display = 'flex';
+                }
+            }
+        }
+    }
+
     selectNextTab() {
         if (this.tabs.length <= 1) return;
-        
+
         const currentIndex = this.tabs.findIndex(t => t.id === this.activeTabId);
         const nextIndex = (currentIndex + 1) % this.tabs.length;
         this.switchToTab(this.tabs[nextIndex].id);
@@ -6811,10 +7020,21 @@ class TabManager {
             bookmarkEl.className = 'bookmark';
             bookmarkEl.dataset.bookmarkId = bookmark.id;
             
-            const faviconHtml = bookmark.favicon 
-                ? `<img class="bookmark-favicon" src="${bookmark.favicon}" onerror="this.style.display='none'">`
-                : '';
-            
+            // SECURITY: Build bookmark element using DOM APIs to prevent XSS
+            // via malicious page titles, favicons, or tags
+            if (bookmark.favicon && isSafeFaviconUrl(bookmark.favicon)) {
+                const img = document.createElement('img');
+                img.className = 'bookmark-favicon';
+                img.src = bookmark.favicon;
+                img.onerror = function() { this.style.display = 'none'; };
+                bookmarkEl.appendChild(img);
+            }
+
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'bookmark-title';
+            titleSpan.textContent = bookmark.title;
+            bookmarkEl.appendChild(titleSpan);
+
             // Build tooltip content if tags or description exist
             let tooltipContent = bookmark.title;
             if (bookmark.description) {
@@ -6823,24 +7043,26 @@ class TabManager {
             if (bookmark.tags && bookmark.tags.length > 0) {
                 tooltipContent += '\n\nTags: ' + bookmark.tags.join(', ');
             }
-            
-            // Build tag chips HTML (show first 2 tags inline)
-            let tagChipsHtml = '';
+
+            // Build tag chips using DOM APIs
             if (bookmark.tags && bookmark.tags.length > 0) {
+                const tagsDiv = document.createElement('div');
+                tagsDiv.className = 'bookmark-tags';
                 const tagsToShow = bookmark.tags.slice(0, 2);
-                tagChipsHtml = tagsToShow.map(tag => 
-                    `<span class="bookmark-tag">${tag}</span>`
-                ).join('');
+                tagsToShow.forEach(tag => {
+                    const tagSpan = document.createElement('span');
+                    tagSpan.className = 'bookmark-tag';
+                    tagSpan.textContent = tag;
+                    tagsDiv.appendChild(tagSpan);
+                });
                 if (bookmark.tags.length > 2) {
-                    tagChipsHtml += `<span class="bookmark-tag-more">+${bookmark.tags.length - 2}</span>`;
+                    const moreSpan = document.createElement('span');
+                    moreSpan.className = 'bookmark-tag-more';
+                    moreSpan.textContent = '+' + (bookmark.tags.length - 2);
+                    tagsDiv.appendChild(moreSpan);
                 }
+                bookmarkEl.appendChild(tagsDiv);
             }
-            
-            bookmarkEl.innerHTML = `
-                ${faviconHtml}
-                <span class="bookmark-title">${bookmark.title}</span>
-                ${tagChipsHtml ? `<div class="bookmark-tags">${tagChipsHtml}</div>` : ''}
-            `;
             
             // Add enhanced tooltip
             bookmarkEl.title = tooltipContent;
@@ -6967,8 +7189,13 @@ class TabManager {
                         }, 100);
                         break;
                     case 'new-window':
-                        // Pass URL to new window
-                        await window.electronAPI.newWindowWithUrl(bookmark.url);
+                        // SECURITY: Validate bookmark URL scheme before opening
+                        const bmUrlLower = (bookmark.url || '').toLowerCase().trim();
+                        if (!bmUrlLower.startsWith('javascript:') && !bmUrlLower.startsWith('data:') &&
+                            !bmUrlLower.startsWith('file:') && !bmUrlLower.startsWith('blob:') &&
+                            !bmUrlLower.startsWith('vbscript:')) {
+                            await window.electronAPI.newWindowWithUrl(bookmark.url);
+                        }
                         break;
                     case 'rename':
                         this.renameBookmark(bookmark);
@@ -7153,8 +7380,8 @@ class TabManager {
 
         // Get the selected model
         const modelSelect = document.getElementById('model-select');
-        const selectedModel = modelSelect ? modelSelect.value : 'claude-3-5-haiku-20241022';
-        const isInception = selectedModel === 'mercury';
+        const selectedModel = modelSelect ? modelSelect.value : 'claude-sonnet-4-6';
+        const isInception = selectedModel === 'mercury-2';
         const aiName = isInception ? 'Inception Labs Mercury' : 'Claude AI';
 
         this.showNotification(`Using ${aiName} to intelligently group your tabs...`, 'info');
@@ -7903,6 +8130,8 @@ class TabManager {
                     // Create a small colored dot indicator
                     const indicator = document.createElement('div');
                     indicator.className = 'tab-group-indicator';
+                    // SECURITY: Validate color to prevent CSS injection from AI responses
+                    const safeColor = /^#[0-9a-fA-F]{3,8}$|^(red|blue|green|orange|purple|yellow|pink|cyan|magenta|lime|teal|indigo|violet|gray|grey|white|black|brown|navy|olive|maroon|aqua|silver|gold|coral|salmon|tomato|crimson|orchid|plum|sienna|tan|wheat|khaki|lavender)$/i.test(color) ? color : '#888';
                     indicator.style.cssText = `
                         position: absolute;
                         bottom: 2px;
@@ -7910,7 +8139,7 @@ class TabManager {
                         transform: translateX(-50%);
                         width: 6px;
                         height: 6px;
-                        background: ${color};
+                        background: ${safeColor};
                         border-radius: 50%;
                         opacity: 0;
                         transition: opacity 0.3s ease-in;
@@ -7947,10 +8176,18 @@ class TabManager {
         this.bookmarksBar.addEventListener('drop', (e) => {
             e.preventDefault();
             this.bookmarksBar.classList.remove('drag-over');
-            
+
             try {
                 const data = JSON.parse(e.dataTransfer.getData('text/plain'));
                 if (data.url) {
+                    // SECURITY: Validate URL scheme before adding bookmark from drag-and-drop
+                    const dropUrlLower = String(data.url).toLowerCase().trim();
+                    if (dropUrlLower.startsWith('javascript:') || dropUrlLower.startsWith('data:') ||
+                        dropUrlLower.startsWith('file:') || dropUrlLower.startsWith('blob:') ||
+                        dropUrlLower.startsWith('vbscript:')) {
+                        console.warn('Blocked dangerous URL scheme in dropped bookmark');
+                        return;
+                    }
                     this.addBookmark(data.url, data.title, data.favicon);
                 }
             } catch (err) {
@@ -8256,12 +8493,28 @@ class TabManager {
 
         // Also add a message listener for postMessage from webview
         window.addEventListener('message', (event) => {
+            // SECURITY: Only accept messages from our exact origin (not file://)
+            if (event.origin !== window.location.origin) {
+                console.warn('Rejected postMessage from untrusted origin:', event.origin);
+                return;
+            }
             if (event.data && event.data.type === 'AUTOMATION_ACTION') {
                 const actionData = event.data.action;
-                this.recordedActions.push({
-                    ...actionData,
+                if (!actionData || typeof actionData !== 'object') return;
+                // SECURITY: Only copy known-safe properties to prevent prototype pollution
+                const allowedActionTypes = ['click', 'type', 'navigate', 'scroll', 'select', 'keypress', 'hover', 'wait', 'input'];
+                if (!allowedActionTypes.includes(actionData.type)) return;
+                const safeAction = {
+                    type: String(actionData.type),
                     timestamp: Date.now()
-                });
+                };
+                if (typeof actionData.selector === 'string') safeAction.selector = actionData.selector;
+                if (typeof actionData.value === 'string') safeAction.value = actionData.value;
+                if (typeof actionData.url === 'string') safeAction.url = actionData.url;
+                if (typeof actionData.key === 'string') safeAction.key = actionData.key;
+                if (typeof actionData.x === 'number') safeAction.x = actionData.x;
+                if (typeof actionData.y === 'number') safeAction.y = actionData.y;
+                this.recordedActions.push(safeAction);
 
                 // Send to main process via IPC
                 if (window.electronAPI && window.electronAPI.sendRecordingAction) {
@@ -8468,33 +8721,41 @@ class TabManager {
         }
 
 
-        // Simply call the preload script's recording function
-        // The preload script handles persistence across navigations via sessionStorage
-        webview.executeJavaScript(`
-            (function() {
-                // Try to use the preload script's recording function
-                if (typeof window.__startAutomationRecording === 'function') {
-                    window.__startAutomationRecording();
-                    return 'recording-started';
-                } else {
-                    console.error('❌ Preload recording function not found');
-                    return 'preload-not-found';
-                }
-            })();
-        `).then(result => {
-            if (result === 'recording-started') {
+        // SECURITY: Retrieve the automation token from main process, not from window.
+        // Previously this called window.__getAutomationToken() via executeJavaScript, but
+        // under contextIsolation:false a malicious page could race to call it first and
+        // steal the token to invoke __startAutomationRecording for silent keystroke capture.
+        // Now the token is sent from the preload to main via IPC on load, and the renderer
+        // fetches it here. The page cannot call IPC (nodeIntegration:false).
+        const webviewId = webview.getWebContentsId();
+        window.electronAPI.getWebviewAutomationToken(webviewId).then(async token => {
+            if (!token) {
+                console.warn('⚠️ Preload script not available, trying custom injection');
+                this.injectCustomRecordingScript(webview);
+                return;
+            }
+            this._automationToken = token;
+            try {
+                await webview.executeJavaScript(`
+                    (function() {
+                        if (typeof window.__startAutomationRecording === 'function') {
+                            window.__startAutomationRecording(${JSON.stringify(token)});
+                            return 'recording-started';
+                        }
+                        return 'preload-not-found';
+                    })();
+                `);
                 try {
                     this.showRecordingToast(`📍 Recording active on: ${webview.getURL()}`);
                 } catch (e) {
                     this.showRecordingToast(`📍 Recording started`);
                 }
-            } else {
-                console.warn('⚠️ Preload script not available, trying custom injection');
+            } catch (err) {
+                console.error('Error injecting recording script:', err);
                 this.injectCustomRecordingScript(webview);
             }
         }).catch(err => {
-            console.error('Error injecting recording script:', err);
-            // Fallback to custom script
+            console.error('Error retrieving automation token:', err);
             this.injectCustomRecordingScript(webview);
         });
     }
@@ -8535,7 +8796,7 @@ class TabManager {
                             window.parent.postMessage({
                                 type: 'AUTOMATION_ACTION',
                                 action: action
-                            }, '*');
+                            }, window.location.origin);
                         }
                     }
 
@@ -8850,9 +9111,10 @@ class TabManager {
         if (this.currentRecording && this.currentRecording.webview) {
             // Tell the preload script to stop recording
             try {
+                const token = this._automationToken || '';
                 await this.currentRecording.webview.executeJavaScript(`
                     if (window.__stopAutomationRecording) {
-                        window.__stopAutomationRecording();
+                        window.__stopAutomationRecording(${JSON.stringify(String(token))});
                     }
                     // Also clear sessionStorage to prevent auto-restart
                     sessionStorage.removeItem('__automationRecording');
@@ -9313,7 +9575,16 @@ class SimplifiedAutomation {
                 break;
 
             case 'navigate':
-                window.location.href = action.url;
+                // Validate URL scheme to prevent javascript:/data: injection
+                try {
+                    const navUrl = new URL(action.url);
+                    if (navUrl.protocol !== 'http:' && navUrl.protocol !== 'https:') {
+                        throw new Error('Only http and https URLs are allowed');
+                    }
+                    window.location.href = action.url;
+                } catch (e) {
+                    console.error('Invalid navigate URL:', e.message);
+                }
                 // Wait for navigation to complete
                 await this.waitForPageLoad();
                 break;
@@ -9326,11 +9597,14 @@ class SimplifiedAutomation {
                     const webview = this.getCurrentWebview();
                     if (webview) {
                         try {
+                            // SECURITY: Validate coordinates are finite numbers before interpolation
+                            const pbClickX = Number.isFinite(Number(action.x)) ? Number(action.x) : 0;
+                            const pbClickY = Number.isFinite(Number(action.y)) ? Number(action.y) : 0;
                             await webview.executeJavaScript(`
                                 (function() {
                                     // Create and dispatch mouse events at the coordinates
-                                    const clickX = ` + action.x + `;
-                                    const clickY = ` + action.y + `;
+                                    const clickX = ` + pbClickX + `;
+                                    const clickY = ` + pbClickY + `;
 
                                     // Find element at coordinates
                                     const element = document.elementFromPoint(clickX, clickY);
@@ -9477,25 +9751,30 @@ class SimplifiedAutomation {
                 const webview = this.getCurrentWebview();
                 if (webview) {
                     try {
+                        // SECURITY: Validate coordinates and selector before interpolation
+                        const hoverX = Number.isFinite(Number(action.x)) ? Number(action.x) : 0;
+                        const hoverY = Number.isFinite(Number(action.y)) ? Number(action.y) : 0;
+                        const hoverSelector = JSON.stringify(String(action.selector || ''));
                         await webview.executeJavaScript(`
                             (function() {
 
                                 // Find the target element
                                 let targetElement = null;
-                                if ('` + action.selector + `') {
-                                    targetElement = document.querySelector('` + action.selector + `');
+                                const selector = ` + hoverSelector + `;
+                                if (selector) {
+                                    targetElement = document.querySelector(selector);
                                 }
 
-                                if (!targetElement && ` + (action.x || 0) + ` && ` + (action.y || 0) + `) {
-                                    targetElement = document.elementFromPoint(` + (action.x || 0) + `, ` + (action.y || 0) + `);
+                                if (!targetElement && ` + hoverX + ` && ` + hoverY + `) {
+                                    targetElement = document.elementFromPoint(` + hoverX + `, ` + hoverY + `);
                                 }
 
                                 if (targetElement) {
 
                                     // Get element position
                                     const rect = targetElement.getBoundingClientRect();
-                                    const x = ` + (action.x || 0) + ` || (rect.left + rect.width / 2);
-                                    const y = ` + (action.y || 0) + ` || (rect.top + rect.height / 2);
+                                    const x = ` + hoverX + ` || (rect.left + rect.width / 2);
+                                    const y = ` + hoverY + ` || (rect.top + rect.height / 2);
 
                                     // Show visual indicator
                                     const indicator = document.createElement('div');
@@ -9531,13 +9810,13 @@ class SimplifiedAutomation {
                                 } else {
 
                                     // Still dispatch to document at coordinates
-                                    if (` + (action.x || 0) + ` && ` + (action.y || 0) + `) {
+                                    if (` + hoverX + ` && ` + hoverY + `) {
                                         const event = new MouseEvent('mousemove', {
                                             view: window,
                                             bubbles: true,
                                             cancelable: true,
-                                            clientX: ` + (action.x || 0) + `,
-                                            clientY: ` + (action.y || 0) + `
+                                            clientX: ` + hoverX + `,
+                                            clientY: ` + hoverY + `
                                         });
                                         document.dispatchEvent(event);
                                     }
@@ -9561,26 +9840,29 @@ class SimplifiedAutomation {
                 const scrollWebview = this.getCurrentWebview();
                 if (scrollWebview) {
                     try {
+                        // SECURITY: Validate scroll coordinates are finite numbers before interpolation
+                        const scrollToX = Number.isFinite(Number(action.x)) ? Number(action.x) : 0;
+                        const scrollToY = Number.isFinite(Number(action.y)) ? Number(action.y) : 0;
                         await scrollWebview.executeJavaScript(`
                             (function() {
 
                                 // Smooth scroll to the recorded position
                                 window.scrollTo({
-                                    left: ` + (action.x || 0) + `,
-                                    top: ` + (action.y || 0) + `,
+                                    left: ` + scrollToX + `,
+                                    top: ` + scrollToY + `,
                                     behavior: 'smooth'
                                 });
 
                                 // Alternative for older browsers
                                 if (!window.scrollTo) {
-                                    window.pageXOffset = ` + (action.x || 0) + `;
-                                    window.pageYOffset = ` + (action.y || 0) + `;
+                                    window.pageXOffset = ` + scrollToX + `;
+                                    window.pageYOffset = ` + scrollToY + `;
                                 }
 
                                 // Visual indicator
                                 const indicator = document.createElement('div');
                                 indicator.style.cssText = 'position: fixed; right: 20px; top: 20px; background: rgba(0, 123, 255, 0.8); color: white; padding: 8px 12px; border-radius: 4px; font-size: 14px; z-index: 999999; animation: fadeOut 2s forwards;';
-                                indicator.textContent = '📜 Scrolled to (` + (action.x || 0) + `, ` + (action.y || 0) + `)';
+                                indicator.textContent = '📜 Scrolled to (` + scrollToX + `, ` + scrollToY + `)';
 
                                 // Add fade out animation
                                 const style = document.createElement('style');
@@ -9616,7 +9898,7 @@ class SimplifiedAutomation {
                         await hoverWebview.executeJavaScript(`
                             (function() {
 
-                                const element = document.querySelector('` + action.selector + `');
+                                const element = document.querySelector(` + JSON.stringify(String(action.selector || '')) + `);
                                 if (element) {
 
                                     // Scroll into view
@@ -9667,7 +9949,7 @@ class SimplifiedAutomation {
 
                                     return 'Hover simulated successfully';
                                 } else {
-                                    return 'Element not found: ` + action.selector + `';
+                                    return 'Element not found: ' + ` + JSON.stringify(String(action.selector || '')) + `;
                                 }
                             })();
                         `);
@@ -10204,7 +10486,7 @@ class RobustWebviewAutomation {
             <input type="text" id="automation-name-input-temp"
                    style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;margin-bottom:15px;box-sizing:border-box;"
                    placeholder="Enter automation name"
-                   value="${this.currentRecording?.title || 'My Automation'}">
+                   value="${this.escapeHtml(this.currentRecording?.title || 'My Automation')}">
             <div style="display:flex;gap:10px;justify-content:flex-end;">
                 <button id="automation-cancel-temp" style="padding:8px 16px;background:#ccc;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
                 <button id="automation-save-temp" style="padding:8px 16px;background:#4CAF50;color:white;border:none;border-radius:4px;cursor:pointer;">Save</button>
@@ -10574,9 +10856,9 @@ class RobustWebviewAutomation {
             const item = document.createElement('div');
             item.className = 'automation-menu-item';
             item.innerHTML = `
-                <span class="automation-name">${automation.name}</span>
-                <span class="automation-actions">(${automation.actions.length} actions)</span>
-                <button class="automation-delete" data-id="${automation.id}" title="Delete automation">×</button>
+                <span class="automation-name">${this.escapeHtml(automation.name)}</span>
+                <span class="automation-actions">(${parseInt(automation.actions.length) || 0} actions)</span>
+                <button class="automation-delete" data-id="${this.escapeHtml(automation.id)}" title="Delete automation">×</button>
             `;
 
             // Click to run automation
@@ -10659,6 +10941,18 @@ class RobustWebviewAutomation {
         // Make sure we have a valid starting URL
         if (!startingUrl) {
             this.showNotification('Automation has no starting URL', 'error');
+            return;
+        }
+
+        // SECURITY: Validate starting URL scheme to prevent javascript:/data: execution
+        try {
+            const startUrlScheme = new URL(startingUrl).protocol;
+            if (startUrlScheme !== 'http:' && startUrlScheme !== 'https:') {
+                this.showNotification('Automation has an unsafe starting URL scheme', 'error');
+                return;
+            }
+        } catch (e) {
+            this.showNotification('Automation has an invalid starting URL', 'error');
             return;
         }
 
@@ -10884,7 +11178,7 @@ Total Steps: ${automation.actions.length}
                     ✅ Successful: ${successfulActions} | ❌ Failed: ${failedActions.length}
                 </div>
                 <div style="color: ${colors[type]}; margin-bottom: 10px;">
-                    [${timestamp}] ${message}
+                    [${this.escapeHtml(timestamp)}] ${this.escapeHtml(message)}
                 </div>
                 <div style="display: flex; gap: 10px; margin-top: 15px;">
                     <button id="skip-action-btn" style="
@@ -10942,7 +11236,7 @@ Total Steps: ${automation.actions.length}
                 ${failedActions.length > 0 ? `
                     <div style="color: #FF5252; font-size: 11px; margin-top: 10px; border-top: 1px solid #444; padding-top: 10px;">
                         <strong>Failed Actions:</strong><br>
-                        ${failedActions.slice(-3).map(f => `Step ${f.step}: ${f.error}`).join('<br>')}
+                        ${failedActions.slice(-3).map(f => `Step ${f.step}: ${this.escapeHtml(f.error)}`).join('<br>')}
                     </div>
                 ` : ''}
             `;
@@ -10989,7 +11283,7 @@ Total Steps: ${automation.actions.length}
                 const debugContent = document.getElementById('debug-content');
                 if (debugContent) {
                     const timestamp = new Date().toLocaleTimeString();
-                    debugContent.innerHTML = `[${timestamp}] ${info}<br>` + debugContent.innerHTML;
+                    debugContent.innerHTML = `[${this.escapeHtml(timestamp)}] ${this.escapeHtml(info)}<br>` + debugContent.innerHTML;
                     // Keep only last 10 debug entries
                     const lines = debugContent.innerHTML.split('<br>');
                     if (lines.length > 10) {
@@ -11101,6 +11395,20 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                     switch (action.type) {
                     case 'navigate':
                     case 'navigate-spa':
+                        // SECURITY: Validate URL scheme to prevent javascript:/file:/data: attacks
+                        try {
+                            const navScheme = new URL(action.url).protocol;
+                            if (navScheme !== 'http:' && navScheme !== 'https:') {
+                                updateProgress(`Blocked unsafe URL scheme: ${navScheme}`, 'error');
+                                success = false;
+                                break;
+                            }
+                        } catch (e) {
+                            updateProgress('Blocked invalid navigation URL', 'error');
+                            success = false;
+                            break;
+                        }
+
                         updateProgress(`Navigating to: ${action.url}`, 'info');
 
                         // Check if this is a SPA navigation (same origin/path, different hash)
@@ -11768,8 +12076,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                         const mouseResult = await safeExecuteScript(`
                             (function() {
                                 const selector = ${JSON.stringify(action.selector || '')};
-                                const x = ${action.x || 0};
-                                const y = ${action.y || 0};
+                                const x = ${Number(action.x) || 0};
+                                const y = ${Number(action.y) || 0};
 
                                 let element = null;
                                 if (selector) {
@@ -11991,12 +12299,12 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 // Specialized form field click - always use coordinates
                 return `
                     (function() {
-                        console.log('Form field click at (${action.x}, ${action.y}) - ${action.fieldLabel || action.fieldId}');
+                        console.log('Form field click at (' + ${Number(action.x) || 0} + ', ' + ${Number(action.y) || 0} + ') - ' + ${JSON.stringify(String(action.fieldLabel || action.fieldId || ''))});
                         return {
                             success: true,
                             needsRobotClick: true,
-                            x: ${action.x},
-                            y: ${action.y},
+                            x: ${Number(action.x) || 0},
+                            y: ${Number(action.y) || 0},
                             isFormField: true,
                             directCoordinates: true
                         };
@@ -12007,17 +12315,17 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 // Form input with better handling - try JS first for reliability
                 return `
                     (async function() {
-                        console.log('Form input at (${action.x}, ${action.y}): "${action.value}" in ${action.fieldLabel || action.fieldId}');
+                        console.log('Form input at (' + ${Number(action.x) || 0} + ', ' + ${Number(action.y) || 0} + '): ' + ${JSON.stringify(String(action.value || ''))} + ' in ' + ${JSON.stringify(String(action.fieldLabel || action.fieldId || ''))});
 
                         // First try to set value directly via JavaScript for reliability
-                        const element = document.elementFromPoint(${action.x}, ${action.y});
+                        const element = document.elementFromPoint(${Number(action.x) || 0}, ${Number(action.y) || 0});
                         if (element && (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA')) {
                             // Focus the element
                             element.focus();
 
                             // Clear and set new value
                             element.value = '';
-                            element.value = '${action.value.replace(/'/g, "\\'")}';
+                            element.value = ${JSON.stringify(String(action.value || ''))};
 
                             // Dispatch input events to trigger any listeners
                             element.dispatchEvent(new Event('input', { bubbles: true }));
@@ -12028,7 +12336,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
 
 
                             // If value was set successfully, we're done
-                            if (element.value === '${action.value.replace(/'/g, "\\'")}') {
+                            if (element.value === ${JSON.stringify(String(action.value || ''))}) {
                                 return { success: true };
                             }
                         }
@@ -12037,10 +12345,10 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                         return {
                             success: true,
                             needsFormInput: true,
-                            x: ${action.x},
-                            y: ${action.y},
-                            value: '${action.value.replace(/'/g, "\\'")}',
-                            fieldLabel: '${action.fieldLabel || ''}',
+                            x: ${Number(action.x) || 0},
+                            y: ${Number(action.y) || 0},
+                            value: ${JSON.stringify(String(action.value || ''))},
+                            fieldLabel: ${JSON.stringify(String(action.fieldLabel || ''))},
                             directCoordinates: true
                         };
                     })();
@@ -12053,7 +12361,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                         return {
                             success: true,
                             needsRobotTab: true,
-                            fromField: '${action.fromField || ''}',
+                            fromField: ${JSON.stringify(String(action.fromField || ''))},
                             directCoordinates: true
                         };
                     })();
@@ -12063,12 +12371,12 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 // ALWAYS use coordinates - no fallback
                 return `
                     (function() {
-                        console.log('Click at (${action.x || 0}, ${action.y || 0})');
+                        console.log('Click at (${Number(action.x) || 0}, ${Number(action.y) || 0})');
                         return {
                             success: true,
                             needsRobotClick: true,
-                            x: ${action.x || 0},
-                            y: ${action.y || 0},
+                            x: ${Number(action.x) || 0},
+                            y: ${Number(action.y) || 0},
                             directCoordinates: true
                         };
                     })();
@@ -12372,13 +12680,13 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 // ALWAYS use coordinates
                 return `
                     (function() {
-                        console.log('Input at (${action.x || 0}, ${action.y || 0}): "${action.value || ''}"');
+                        console.log('Input at (' + ${Number(action.x) || 0} + ', ' + ${Number(action.y) || 0} + '): ' + ${JSON.stringify(String(action.value || ''))});
                         return {
                             success: true,
                             needsRobotInput: true,
-                            x: ${action.x || 0},
-                            y: ${action.y || 0},
-                            value: '${(action.value || '').replace(/'/g, "\\'")}',
+                            x: ${Number(action.x) || 0},
+                            y: ${Number(action.y) || 0},
+                            value: ${JSON.stringify(String(action.value || ''))},
                             directCoordinates: true
                         };
                     })();
@@ -12437,7 +12745,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                                 needsRobotInput: true,
                                 x: x,
                                 y: y,
-                                value: '${action.value.replace(/'/g, "\\'")}',
+                                value: ${JSON.stringify(String(action.value || ''))},
                                 element: {
                                     tagName: element.tagName,
                                     className: element.className,
@@ -12490,9 +12798,9 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                             await new Promise(resolve => setTimeout(resolve, 300));
 
                             try {
-                                element.value = '${action.value ? action.value.replace(/'/g, "\\'") : ''}';
+                                element.value = ${JSON.stringify(String(action.value || ''))};
                                 element.dispatchEvent(new Event('change', { bubbles: true }));
-                                console.log('Select value set to:', '${action.value ? action.value.replace(/'/g, "\\'") : ''}');
+                                console.log('Select value set to:', ${JSON.stringify(String(action.value || ''))});
                                 return { success: true };
                             } catch (selectError) {
                                 console.error('Select change failed:', selectError);
@@ -12557,11 +12865,11 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 // Mouse move with coordinates
                 return `
                     (function() {
-                        console.log('Mouse move to (${action.x || 0}, ${action.y || 0})');
+                        console.log('Mouse move to (${Number(action.x) || 0}, ${Number(action.y) || 0})');
 
                         // Try to trigger hover events if we have coordinates
-                        if (${action.x || 0} && ${action.y || 0}) {
-                            const element = document.elementFromPoint(${action.x || 0}, ${action.y || 0});
+                        if (${Number(action.x) || 0} && ${Number(action.y) || 0}) {
+                            const element = document.elementFromPoint(${Number(action.x) || 0}, ${Number(action.y) || 0});
                             if (element) {
                                 // Trigger mouse events on the element
                                 ['mouseenter', 'mouseover', 'mousemove'].forEach(eventType => {
@@ -12569,8 +12877,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                                         view: window,
                                         bubbles: true,
                                         cancelable: true,
-                                        clientX: ${action.x || 0},
-                                        clientY: ${action.y || 0}
+                                        clientX: ${Number(action.x) || 0},
+                                        clientY: ${Number(action.y) || 0}
                                     });
                                     element.dispatchEvent(event);
                                 });
@@ -12579,8 +12887,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
 
                         return {
                             success: true,
-                            x: ${action.x || 0},
-                            y: ${action.y || 0}
+                            x: ${Number(action.x) || 0},
+                            y: ${Number(action.y) || 0}
                         };
                     })();
                 `;
@@ -12589,12 +12897,12 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 // ALWAYS use coordinates
                 return `
                     (function() {
-                        console.log('Hover at (${action.x || 0}, ${action.y || 0})');
+                        console.log('Hover at (${Number(action.x) || 0}, ${Number(action.y) || 0})');
                         return {
                             success: true,
                             needsRealHover: true,
-                            x: ${action.x || 0},
-                            y: ${action.y || 0},
+                            x: ${Number(action.x) || 0},
+                            y: ${Number(action.y) || 0},
                             directCoordinates: true
                         };
                     })();
@@ -12746,8 +13054,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                     (async function() {
                         try {
                             // Return scroll parameters for robot API
-                            const scrollX = ${action.x || 0};
-                            const scrollY = ${action.y || 0};
+                            const scrollX = ${Number(action.x) || 0};
+                            const scrollY = ${Number(action.y) || 0};
 
                             // Get current scroll position and viewport info
                             const currentX = window.scrollX || window.pageXOffset;
@@ -12788,8 +13096,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                             return {
                                 success: true,
                                 needsRobotClick: true,
-                                x: ${action.x},
-                                y: ${action.y},
+                                x: ${Number(action.x) || 0},
+                                y: ${Number(action.y) || 0},
                                 isFocusAction: true,
                                 directCoordinates: true
                             };
@@ -12808,20 +13116,23 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             case 'keypress':
                 // For keypress, we need to focus the element first (click on it), then send the key
                 if (action.x !== undefined && action.y !== undefined) {
+                    const kpX = Number(action.x) || 0;
+                    const kpY = Number(action.y) || 0;
+                    const kpKey = JSON.stringify(String(action.key));
                     return `
                         // Using coordinates to focus element then send keypress
                         (function() {
-                            console.log('Keypress at (${action.x}, ${action.y}): ${action.key}');
+                            console.log('Keypress at (${kpX}, ${kpY}): ' + ${kpKey});
                             return {
                                 success: true,
                                 needsRobotKeypress: true,
-                                x: ${action.x},
-                                y: ${action.y},
-                                key: '${action.key}',
-                                ctrlKey: ${action.ctrlKey || false},
-                                shiftKey: ${action.shiftKey || false},
-                                altKey: ${action.altKey || false},
-                                metaKey: ${action.metaKey || false},
+                                x: ${kpX},
+                                y: ${kpY},
+                                key: ${kpKey},
+                                ctrlKey: ${!!action.ctrlKey},
+                                shiftKey: ${!!action.shiftKey},
+                                altKey: ${!!action.altKey},
+                                metaKey: ${!!action.metaKey},
                                 directCoordinates: true
                             };
                         })();
@@ -12829,17 +13140,18 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 }
 
                 // Fallback without coordinates
+                const kpKeyFb = JSON.stringify(String(action.key));
                 return `
                     (function() {
-                        console.log('Keypress without coordinates - sending key directly: ${action.key}');
+                        console.log('Keypress without coordinates - sending key directly: ' + ${kpKeyFb});
                         return {
                             success: true,
                             needsRobotKeypress: true,
-                            key: '${action.key}',
-                            ctrlKey: ${action.ctrlKey || false},
-                            shiftKey: ${action.shiftKey || false},
-                            altKey: ${action.altKey || false},
-                            metaKey: ${action.metaKey || false}
+                            key: ${kpKeyFb},
+                            ctrlKey: ${!!action.ctrlKey},
+                            shiftKey: ${!!action.shiftKey},
+                            altKey: ${!!action.altKey},
+                            metaKey: ${!!action.metaKey}
                         };
                     })();
                 `;
@@ -12900,8 +13212,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 return `
                     (function() {
                         return new Promise(resolve => {
-                            console.log('Waiting ${action.duration || 500}ms...');
-                            setTimeout(resolve, ${action.duration || 500});
+                            console.log('Waiting ${Number(action.duration) || 500}ms...');
+                            setTimeout(resolve, ${Number(action.duration) || 500});
                         });
                     })();
                 `;
@@ -12922,8 +13234,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                         }
 
                         // Fallback to coordinates if no element found
-                        if (!element && ${action.x || 0} && ${action.y || 0}) {
-                            element = document.elementFromPoint(${action.x || 0}, ${action.y || 0});
+                        if (!element && ${Number(action.x) || 0} && ${Number(action.y) || 0}) {
+                            element = document.elementFromPoint(${Number(action.x) || 0}, ${Number(action.y) || 0});
                         }
 
                         if (element && (element.type === 'checkbox' || element.type === 'radio')) {
@@ -12952,8 +13264,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                             return {
                                 success: false,
                                 needsRobotClick: true,
-                                x: ${action.x || 0},
-                                y: ${action.y || 0}
+                                x: ${Number(action.x) || 0},
+                                y: ${Number(action.y) || 0}
                             };
                         }
                     })();
@@ -13096,6 +13408,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         this.urlBarContextMenu = document.getElementById('url-bar-context-menu');
         this.pageContextMenuClickHandler = null;
         this.currentLinkUrl = null;
+        this.currentLinkText = null;
         this.currentSelectedText = null;
         this.currentImageUrl = null;
         this.currentImageLinkUrl = null;
@@ -13265,26 +13578,22 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     setupDarkModeEnforcer() {
         this.darkModeEnforcerToggle = document.getElementById('dark-mode-enforcer-toggle');
 
-        // Load initial state from localStorage
-        const savedState = localStorage.getItem('darkModeEnforcer');
-        this.darkModeEnforcerToggle.checked = savedState === 'true';
+        // Sync toggle state with current theme (dark theme = checked)
+        const currentTheme = this.currentTheme || DEFAULT_THEME;
+        this.darkModeEnforcerToggle.checked = currentTheme === 'dark';
 
-        // Apply dark mode to the renderer page on load
-        if (savedState === 'true') {
-            document.body.classList.add('dark-mode');
-        }
-
-        // Handle toggle changes
-        this.darkModeEnforcerToggle.addEventListener('change', () => {
+        // Handle toggle changes - sync with theme system
+        this.darkModeEnforcerToggle.addEventListener('change', async () => {
             const enabled = this.darkModeEnforcerToggle.checked;
-            localStorage.setItem('darkModeEnforcer', enabled.toString());
+            const newTheme = enabled ? 'dark' : 'light';
 
-            // Apply dark mode class to the renderer page
-            if (enabled) {
-                document.body.classList.add('dark-mode');
-            } else {
-                document.body.classList.remove('dark-mode');
-            }
+            // Apply theme
+            this.applyTheme(newTheme);
+
+            // Save theme to settings
+            const settings = await this.loadSettings();
+            settings.theme = newTheme;
+            await this.saveSettings(settings);
 
             // Reload all existing webviews to apply dark mode
             this.tabs.forEach(tab => {
@@ -13293,6 +13602,28 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 }
             });
         });
+    }
+
+    applyTheme(themeId) {
+        // Remove all theme classes
+        Object.values(THEMES).forEach(theme => {
+            document.body.classList.remove(theme.class);
+        });
+
+        // Also remove legacy dark-mode class to prevent conflicts
+        document.body.classList.remove('dark-mode');
+
+        // Apply new theme
+        const theme = THEMES[themeId] || THEMES[DEFAULT_THEME];
+        document.body.classList.add(theme.class);
+
+        // Store current theme
+        this.currentTheme = themeId;
+
+        // Sync dark mode toggle if it exists
+        if (this.darkModeEnforcerToggle) {
+            this.darkModeEnforcerToggle.checked = themeId === 'dark';
+        }
     }
 
     updateDarkModeInWebview(webview, enabled) {
@@ -13435,7 +13766,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     }
     
     getSelectedModel() {
-        return this.modelSelect ? this.modelSelect.value : 'claude-sonnet-4-20250514';
+        return this.modelSelect ? this.modelSelect.value : 'claude-sonnet-4-6';
     }
     
     showPageContextMenu(x, y) {
@@ -13864,8 +14195,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                     const suggestionEl = document.createElement('div');
                     suggestionEl.className = 'suggestion-item';
                     suggestionEl.innerHTML = `
-                        <div class="suggestion-query">${suggestion.query}</div>
-                        <div class="suggestion-context">${suggestion.context || ''}</div>
+                        <div class="suggestion-query">${this.escapeHtml(suggestion.query)}</div>
+                        <div class="suggestion-context">${this.escapeHtml(suggestion.context || '')}</div>
                     `;
                     
                     // Click to search in new tab
@@ -13901,7 +14232,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 suggestionsList.style.display = 'block';
                 suggestionsList.style.visibility = 'visible';
                 suggestionsList.style.opacity = '1';
-                suggestionsList.innerHTML = DOMPurify.sanitize(`<div style="text-align: center; color: #d32f2f; padding: 20px;">Error: ${error.message}</div>`);
+                suggestionsList.innerHTML = DOMPurify.sanitize(`<div style="text-align: center; color: #d32f2f; padding: 20px;">Error: ${this.escapeHtml(error.message)}</div>`);
             }
         }
     }
@@ -14003,7 +14334,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             font-weight: 500;
             border: 1px solid rgba(255, 255, 255, 0.2);
         `;
-        notification.innerHTML = `<span>${message}</span>`;
+        notification.innerHTML = `<span>${this.escapeHtml(message)}</span>`;
         
         // Add animation if not already present
         if (!document.querySelector('#notification-animations')) {
@@ -14093,7 +14424,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         `;
         notification.innerHTML = `
             <span style="font-size: 20px;">📺</span>
-            <span>${message}</span>
+            <span>${this.escapeHtml(message)}</span>
         `;
         
         // Add animation
@@ -14126,7 +14457,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     }
     
     // Link context menu functionality
-    showLinkContextMenu(x, y, linkUrl) {
+    showLinkContextMenu(x, y, linkUrl, linkText = '') {
         // Store coordinates for inspect element feature
         this.contextMenuX = x;
         this.contextMenuY = y;
@@ -14136,8 +14467,9 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         this.hidePageContextMenu();
         this.hideTextContextMenu();
 
-        // Store the link URL for later use
+        // Store the link URL and text for later use
         this.currentLinkUrl = linkUrl;
+        this.currentLinkText = linkText;
         
         // Create or get the invisible overlay
         let overlay = document.getElementById('context-menu-overlay');
@@ -14178,19 +14510,29 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     hideLinkContextMenu() {
         this.linkContextMenu.classList.remove('visible');
         this.currentLinkUrl = null;
-        
+        this.currentLinkText = null;
+
         // Hide the overlay
         const overlay = document.getElementById('context-menu-overlay');
         if (overlay) {
             overlay.style.display = 'none';
         }
-        
+
         // Remove click handler from menu
         this.linkContextMenu.onclick = null;
     }
     
     handleLinkContextMenuAction(action) {
         if (!this.currentLinkUrl) return;
+
+        // SECURITY: Block dangerous URL schemes from context menu actions
+        const linkLower = this.currentLinkUrl.toLowerCase().trim();
+        if (linkLower.startsWith('javascript:') || linkLower.startsWith('data:') ||
+            linkLower.startsWith('file:') || linkLower.startsWith('blob:') ||
+            linkLower.startsWith('vbscript:')) {
+            console.warn('Blocked dangerous URL scheme in context menu:', linkLower.substring(0, 30));
+            return;
+        }
 
         switch(action) {
             case 'open-new-tab':
@@ -14212,7 +14554,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 window.electronAPI.newIncognitoWindowWithUrl(this.currentLinkUrl);
                 break;
             case 'copy-link':
-                // Copy to clipboard
+                // Copy link URL to clipboard
                 const tempInput = document.createElement('textarea');
                 tempInput.value = this.currentLinkUrl;
                 tempInput.style.position = 'absolute';
@@ -14222,10 +14564,235 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 document.execCommand('copy');
                 document.body.removeChild(tempInput);
                 break;
+            case 'copy-link-text':
+                // Copy link text to clipboard
+                if (this.currentLinkText) {
+                    const tempTextInput = document.createElement('textarea');
+                    tempTextInput.value = this.currentLinkText;
+                    tempTextInput.style.position = 'absolute';
+                    tempTextInput.style.left = '-9999px';
+                    document.body.appendChild(tempTextInput);
+                    tempTextInput.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tempTextInput);
+                }
+                break;
+            case 'open-split-view':
+                this.openInSplitView(this.currentLinkUrl);
+                break;
             case 'inspect':
                 this.inspectElementAtPosition(this.contextMenuX, this.contextMenuY);
                 break;
         }
+    }
+
+    // Split View functionality
+    openInSplitView(url) {
+        const tab = this.getCurrentTab();
+        if (!tab) return;
+
+        const content = this.getCurrentContent();
+        if (!content) return;
+
+        // If split view already open, just navigate (with scheme validation)
+        if (tab.splitView.isOpen && tab.splitView.webview) {
+            try {
+                const splitUrl = new URL(url);
+                if (!['http:', 'https:'].includes(splitUrl.protocol)) return;
+            } catch(e) { return; }
+            tab.splitView.webview.src = url;
+            tab.splitView.url = url;
+            return;
+        }
+
+        // Mark split view as open
+        tab.splitView.isOpen = true;
+        tab.splitView.url = url;
+
+        // Wrap existing content in main container if not already
+        let mainContainer = content.querySelector('.main-webview-container');
+        if (!mainContainer) {
+            mainContainer = document.createElement('div');
+            mainContainer.className = 'main-webview-container';
+
+            // Move all existing children into the container
+            while (content.firstChild) {
+                mainContainer.appendChild(content.firstChild);
+            }
+            content.appendChild(mainContainer);
+        }
+
+        // Add split-view class to tab-content for flex layout
+        content.classList.add('split-view');
+
+        // Create split pane
+        const splitPane = document.createElement('div');
+        splitPane.className = 'split-pane';
+        splitPane.innerHTML = `
+            <div class="split-pane-header">
+                <button class="split-pane-nav-btn split-back-btn" title="Go back" disabled>←</button>
+                <button class="split-pane-nav-btn split-forward-btn" title="Go forward" disabled>→</button>
+                <button class="split-pane-nav-btn split-reload-btn" title="Reload">↻</button>
+                <div class="split-pane-url" title="${this.escapeHtml(url)}">${this.escapeHtml(url)}</div>
+                <button class="split-pane-close" title="Close split view">×</button>
+            </div>
+            <div class="split-pane-content"></div>
+        `;
+
+        content.appendChild(splitPane);
+
+        // Create webview for split pane
+        const splitWebview = this.createSplitWebview(tab, url);
+        splitPane.querySelector('.split-pane-content').appendChild(splitWebview);
+        tab.splitView.webview = splitWebview;
+
+        // Setup split pane controls
+        this.setupSplitPaneControls(tab, splitPane, splitWebview);
+    }
+
+    createSplitWebview(tab, url) {
+        const webview = document.createElement('webview');
+        webview.className = 'split-pane-webview';
+        webview.style.width = '100%';
+        webview.style.height = '100%';
+        webview.style.position = 'absolute';
+        webview.style.top = '0';
+        webview.style.left = '0';
+        webview.style.background = 'white';
+
+        // Match main webview settings
+        webview.setAttribute('webpreferences', 'contextIsolation=false, nodeIntegration=false');
+
+        const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36';
+        webview.setAttribute('useragent', userAgent);
+        webview.setAttribute('partition', tab.isIncognito ? `incognito-${tab.id}-split` : 'persist:browser');
+        webview.setAttribute('allowpopups', 'true');
+
+        // SECURITY: Validate URL scheme before loading in split view
+        const splitUrlLower = (url || '').toLowerCase().trim();
+        if (splitUrlLower.startsWith('javascript:') || splitUrlLower.startsWith('data:') ||
+            splitUrlLower.startsWith('file:') || splitUrlLower.startsWith('blob:') ||
+            splitUrlLower.startsWith('vbscript:')) {
+            console.warn('Blocked dangerous URL scheme in split view');
+            webview.src = 'about:blank';
+        } else {
+            webview.src = url;
+        }
+
+        return webview;
+    }
+
+    setupSplitPaneControls(tab, splitPane, webview) {
+        const backBtn = splitPane.querySelector('.split-back-btn');
+        const forwardBtn = splitPane.querySelector('.split-forward-btn');
+        const reloadBtn = splitPane.querySelector('.split-reload-btn');
+        const urlDisplay = splitPane.querySelector('.split-pane-url');
+        const closeBtn = splitPane.querySelector('.split-pane-close');
+
+        // Navigation handlers
+        backBtn.addEventListener('click', () => {
+            if (webview.canGoBack()) webview.goBack();
+        });
+
+        forwardBtn.addEventListener('click', () => {
+            if (webview.canGoForward()) webview.goForward();
+        });
+
+        reloadBtn.addEventListener('click', () => {
+            webview.reload();
+        });
+
+        // Close handler
+        closeBtn.addEventListener('click', () => {
+            this.closeSplitView(tab);
+        });
+
+        // Update navigation buttons on navigation
+        const updateNavButtons = () => {
+            try {
+                backBtn.disabled = !webview.canGoBack();
+                forwardBtn.disabled = !webview.canGoForward();
+            } catch (e) {
+                backBtn.disabled = true;
+                forwardBtn.disabled = true;
+            }
+        };
+
+        // Update URL display on navigation
+        webview.addEventListener('did-navigate', (e) => {
+            urlDisplay.textContent = e.url;
+            urlDisplay.title = e.url;
+            tab.splitView.url = e.url;
+            updateNavButtons();
+        });
+
+        webview.addEventListener('did-navigate-in-page', (e) => {
+            if (e.isMainFrame) {
+                urlDisplay.textContent = e.url;
+                urlDisplay.title = e.url;
+                tab.splitView.url = e.url;
+                updateNavButtons();
+            }
+        });
+
+        webview.addEventListener('did-stop-loading', updateNavButtons);
+
+        // Handle context menu in split pane (for links)
+        webview.addEventListener('context-menu', async (e) => {
+            const params = e.params;
+            if (params.linkURL) {
+                // Try to get the link text
+                let linkText = params.linkText || '';
+                if (!linkText) {
+                    try {
+                        // SECURITY: Validate coordinates are finite numbers before interpolation
+                        const lpX = Number.isFinite(Number(params.x)) ? Number(params.x) : 0;
+                        const lpY = Number.isFinite(Number(params.y)) ? Number(params.y) : 0;
+                        linkText = await webview.executeJavaScript(`
+                            (() => {
+                                const x = ${lpX};
+                                const y = ${lpY};
+                                const elements = document.elementsFromPoint(x, y);
+                                for (let element of elements) {
+                                    let current = element;
+                                    while (current && current !== document.documentElement) {
+                                        if (current.tagName === 'A') {
+                                            return current.textContent.trim();
+                                        }
+                                        current = current.parentElement;
+                                    }
+                                }
+                                return '';
+                            })()
+                        `);
+                    } catch (err) {
+                        linkText = '';
+                    }
+                }
+                this.showLinkContextMenu(params.x, params.y, params.linkURL, linkText);
+            }
+        });
+    }
+
+    closeSplitView(tab) {
+        if (!tab || !tab.splitView || !tab.splitView.isOpen) return;
+
+        const content = this.tabsContent.querySelector(`[data-tab-id="${tab.id}"]`);
+        if (!content) return;
+
+        // Remove split pane from DOM
+        const splitPane = content.querySelector('.split-pane');
+        if (splitPane) {
+            splitPane.remove();
+        }
+
+        // Remove split-view class
+        content.classList.remove('split-view');
+
+        // Reset split view state
+        tab.splitView.isOpen = false;
+        tab.splitView.url = null;
+        tab.splitView.webview = null;
     }
 
     // Text selection context menu functionality
@@ -14343,9 +14910,44 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                     }
                 }, 200);
                 break;
+            case 'print-selection':
+                // Print selected text
+                this.printSelectedText(this.currentSelectedText);
+                break;
             case 'inspect':
                 this.inspectElementAtPosition(this.contextMenuX, this.contextMenuY);
                 break;
+        }
+    }
+
+    // Print selected text
+    printSelectedText(text) {
+        if (!text) return;
+
+        const printWindow = window.open('', '_blank', 'width=800,height=600');
+        if (printWindow) {
+            printWindow.document.write(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Print Selection</title>
+                    <style>
+                        body {
+                            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                            padding: 40px;
+                            line-height: 1.6;
+                            white-space: pre-wrap;
+                            word-wrap: break-word;
+                        }
+                    </style>
+                </head>
+                <body>${this.escapeHtml(text)}</body>
+                </html>
+            `);
+            printWindow.document.close();
+            printWindow.focus();
+            printWindow.print();
+            printWindow.close();
         }
     }
 
@@ -14661,7 +15263,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                     <!DOCTYPE html>
                     <html>
                     <head>
-                        <title>Print - ${tab.title || 'Claude Results'}</title>
+                        <title>Print - ${this.escapeHtml(tab.title || 'Claude Results')}</title>
                         <style>
                             body {
                                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -14687,7 +15289,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                         </style>
                     </head>
                     <body>
-                        ${content.innerHTML}
+                        ${DOMPurify.sanitize(content.innerHTML)}
                     </body>
                     </html>
                 `);
@@ -14751,7 +15353,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 <html>
                 <head>
                     <meta charset="UTF-8">
-                    <title>View Source: ${pageUrl}</title>
+                    <title>View Source: ${this.escapeHtml(pageUrl)}</title>
                     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-light.min.css">
                     <style>
                         body {
@@ -14801,7 +15403,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 <body>
                     <div class="header">
                         <strong>View Source</strong>
-                        <div class="url">${pageUrl}</div>
+                        <div class="url">${pageUrl.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')}</div>
                     </div>
                     <div class="source-container">
                         <pre><code class="language-html">${source.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>
@@ -14902,7 +15504,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         this.updateTabTitle(newTabId, newTab.title);
 
         // Update favicon if exists
-        if (newTab.favicon) {
+        if (newTab.favicon && isSafeFaviconUrl(newTab.favicon)) {
             const tabElement = this.tabsContainer.querySelector(`[data-tab-id="${newTabId}"]`);
             if (tabElement) {
                 const favicon = tabElement.querySelector('.tab-favicon');
@@ -14918,6 +15520,14 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         if (!content) return;
 
         if (currentTab.mode === 'web' && currentTab.url) {
+            // Validate scheme before navigating duplicate tab
+            let safeUrl = false;
+            try {
+                const parsedUrl = new URL(currentTab.url);
+                safeUrl = ['http:', 'https:'].includes(parsedUrl.protocol);
+            } catch(e) {}
+            if (!safeUrl) return;
+
             // Navigate to the same URL
             this.showWebView(newTabId);
             const webview = this.getOrCreateWebview(newTabId);
@@ -14932,7 +15542,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             if (claudeResults) {
                 claudeResults.innerHTML = `
                     <div class="claude-response">
-                        <div class="query-header">Duplicated from: ${currentTab.title}</div>
+                        <div class="query-header">Duplicated from: ${this.escapeHtml(currentTab.title)}</div>
                         <div class="response-content">
                             <p>This tab was duplicated from a Claude search. Enter a new query in the address bar to search again.</p>
                         </div>
@@ -15183,10 +15793,9 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             window.electronAPI.getGpuAcceleration ? window.electronAPI.getGpuAcceleration() : Promise.resolve({ enabled: true }),
             this.loadSettings()
         ]).then(([apiResult, inceptionApiResult, gpuResult, browserSettings]) => {
-            const currentKey = apiResult.apiKey || '';
-            const maskedKey = currentKey ? `${currentKey.substring(0, 8)}...${currentKey.substring(currentKey.length - 4)}` : '';
-            const currentInceptionKey = inceptionApiResult.apiKey || '';
-            const maskedInceptionKey = currentInceptionKey ? `${currentInceptionKey.substring(0, 8)}...${currentInceptionKey.substring(currentInceptionKey.length - 4)}` : '';
+            // SECURITY: Main process now returns only masked keys, never raw values
+            const maskedKey = apiResult.maskedKey || '';
+            const maskedInceptionKey = inceptionApiResult.maskedKey || '';
             const gpuEnabled = gpuResult.enabled !== false; // Default to true if not set
 
             container.innerHTML = `
@@ -15203,12 +15812,11 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                                     <input type="password"
                                            id="api-key-input"
                                            class="settings-input"
-                                           placeholder="sk-ant-api..."
-                                           value="${currentKey}">
+                                           placeholder="${this.escapeHtml(maskedKey) || 'sk-ant-api...'}">
                                     <button id="toggle-api-key-visibility" class="settings-button secondary">Show</button>
                                 </div>
                                 <div class="settings-hint">
-                                    ${currentKey ? `Current key: ${maskedKey}` : 'No API key configured'}
+                                    ${maskedKey ? `Current key: ${this.escapeHtml(maskedKey)}` : 'No API key configured'}
                                 </div>
                                 <div class="settings-actions">
                                     <button id="save-api-key" class="settings-button primary">Save API Key</button>
@@ -15221,12 +15829,11 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                                     <input type="password"
                                            id="inception-api-key-input"
                                            class="settings-input"
-                                           placeholder="Enter Inception Labs API key"
-                                           value="${currentInceptionKey}">
+                                           placeholder="${this.escapeHtml(maskedInceptionKey) || 'Enter Inception Labs API key'}">
                                     <button id="toggle-inception-api-key-visibility" class="settings-button secondary">Show</button>
                                 </div>
                                 <div class="settings-hint">
-                                    ${currentInceptionKey ? `Current key: ${maskedInceptionKey}` : 'No Inception Labs API key configured'}
+                                    ${maskedInceptionKey ? `Current key: ${this.escapeHtml(maskedInceptionKey)}` : 'No Inception Labs API key configured'}
                                 </div>
                                 <div class="settings-actions">
                                     <button id="save-inception-api-key" class="settings-button primary">Save API Key</button>
@@ -15235,14 +15842,53 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                         </div>
 
                         <div class="settings-section">
-                            <h2>Startup</h2>
+                            <h2>On startup</h2>
                             <div class="settings-group">
                                 <div class="settings-item">
-                                    <label class="settings-checkbox">
-                                        <input type="checkbox" id="restore-tabs-setting" ${browserSettings.restoreTabsOnStartup ? 'checked' : ''}>
-                                        <span>Restore tabs from previous session</span>
+                                    <label class="settings-radio">
+                                        <input type="radio" name="startup-behavior" value="newTab" ${(!browserSettings.startupBehavior || browserSettings.startupBehavior === 'newTab') ? 'checked' : ''}>
+                                        <span>Open the New Tab page</span>
                                     </label>
-                                    <p class="settings-description">When enabled, all tabs from your last session will be reopened when you start the browser</p>
+                                </div>
+                                <div class="settings-item">
+                                    <label class="settings-radio">
+                                        <input type="radio" name="startup-behavior" value="restore" ${browserSettings.startupBehavior === 'restore' ? 'checked' : ''}>
+                                        <span>Continue where you left off</span>
+                                    </label>
+                                </div>
+                                <div class="settings-item">
+                                    <label class="settings-radio">
+                                        <input type="radio" name="startup-behavior" value="homepage" ${browserSettings.startupBehavior === 'homepage' ? 'checked' : ''}>
+                                        <span>Open a specific page</span>
+                                    </label>
+                                </div>
+                                <div class="settings-item homepage-input-container" style="margin-left: 24px; margin-top: 8px; ${browserSettings.startupBehavior === 'homepage' ? '' : 'display: none;'}">
+                                    <input type="text"
+                                           id="homepage-input"
+                                           class="settings-input"
+                                           placeholder="Enter a web address (e.g., https://google.com)"
+                                           value="${this.escapeHtml(browserSettings.homepage || '')}"
+                                           style="width: 100%; max-width: 400px;">
+                                    <button id="use-current-page-btn" class="settings-button secondary" style="margin-top: 8px;">Use current page</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h2>Appearance</h2>
+                            <div class="settings-group">
+                                <label for="theme-select">Color Theme</label>
+                                <div class="settings-item">
+                                    <select id="theme-select" class="settings-input" style="width: 200px; font-family: inherit;">
+                                        ${Object.entries(THEMES).map(([id, theme]) => `
+                                            <option value="${id}" ${(browserSettings.theme || 'light') === id ? 'selected' : ''}>
+                                                ${theme.name}
+                                            </option>
+                                        `).join('')}
+                                    </select>
+                                </div>
+                                <div class="settings-hint">
+                                    Choose a color scheme for the browser interface
                                 </div>
                             </div>
                         </div>
@@ -15290,6 +15936,41 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                                 <div id="gpu-restart-notice" class="settings-hint" style="margin-top: 8px; color: #ff9800; display: none;">
                                     ⚠ Restart the browser for changes to take effect
                                 </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-section">
+                            <h2>Network</h2>
+                            <div class="settings-group">
+                                <label>HTTP Proxy</label>
+                                <div class="settings-hint">
+                                    Route browser traffic through a proxy server
+                                </div>
+                                <div class="settings-item" style="margin-top: 12px;">
+                                    <label class="settings-checkbox">
+                                        <input type="checkbox" id="proxy-enabled-setting" ${browserSettings.proxyEnabled ? 'checked' : ''}>
+                                        <span>Enable proxy</span>
+                                    </label>
+                                </div>
+                                <div id="proxy-config" style="margin-top: 12px; ${browserSettings.proxyEnabled ? '' : 'opacity: 0.5; pointer-events: none;'}">
+                                    <div class="settings-item">
+                                        <label for="proxy-url-input">Proxy URL</label>
+                                        <input type="text" id="proxy-url-input" class="settings-input"
+                                               placeholder="http://proxy:8080 or socks5://proxy:1080"
+                                               value="${this.escapeHtml(browserSettings.proxyUrl || '')}"
+                                               style="width: 100%; max-width: 400px;">
+                                        <div class="settings-hint">Supports http://, https://, socks4://, socks5://</div>
+                                    </div>
+                                    <div class="settings-item" style="margin-top: 12px;">
+                                        <label for="proxy-bypass-input">Bypass proxy for</label>
+                                        <input type="text" id="proxy-bypass-input" class="settings-input"
+                                               placeholder="localhost, 127.0.0.1, *.local"
+                                               value="${this.escapeHtml(browserSettings.proxyBypass || '')}"
+                                               style="width: 100%; max-width: 400px;">
+                                        <div class="settings-hint">Comma-separated list of hosts that bypass the proxy</div>
+                                    </div>
+                                </div>
+                                <div id="proxy-status" class="settings-hint" style="margin-top: 8px; display: none;"></div>
                             </div>
                         </div>
 
@@ -15546,18 +16227,82 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 });
             }
 
-            // Restore tabs checkbox
-            const restoreTabsCheckbox = container.querySelector('#restore-tabs-setting');
-            if (restoreTabsCheckbox) {
-                restoreTabsCheckbox.addEventListener('change', async () => {
+            // Theme selector
+            const themeSelect = container.querySelector('#theme-select');
+            if (themeSelect) {
+                themeSelect.addEventListener('change', async () => {
+                    const newTheme = themeSelect.value;
+                    this.applyTheme(newTheme);
+
                     const settings = await this.loadSettings();
-                    settings.restoreTabsOnStartup = restoreTabsCheckbox.checked;
-                    this.isRestoreEnabled = restoreTabsCheckbox.checked;
+                    settings.theme = newTheme;
+                    await this.saveSettings(settings);
+                    this.showNotification(`Theme changed to ${THEMES[newTheme].name}`, 'success');
+                });
+            }
+
+            // Startup behavior radio buttons
+            const startupRadios = container.querySelectorAll('input[name="startup-behavior"]');
+            const homepageInputContainer = container.querySelector('.homepage-input-container');
+            const homepageInput = container.querySelector('#homepage-input');
+            const useCurrentPageBtn = container.querySelector('#use-current-page-btn');
+
+            startupRadios.forEach(radio => {
+                radio.addEventListener('change', async () => {
+                    const settings = await this.loadSettings();
+                    settings.startupBehavior = radio.value;
+                    // Keep restoreTabsOnStartup in sync for backwards compatibility
+                    settings.restoreTabsOnStartup = radio.value === 'restore';
+                    this.isRestoreEnabled = radio.value === 'restore';
+                    this.startupBehavior = radio.value;
                     await this.saveSettings(settings);
 
+                    // Show/hide homepage input based on selection
+                    if (homepageInputContainer) {
+                        homepageInputContainer.style.display = radio.value === 'homepage' ? 'block' : 'none';
+                    }
+
                     // Save current tabs if we just enabled restoration
-                    if (this.isRestoreEnabled) {
+                    if (radio.value === 'restore') {
                         await this.saveTabState();
+                    }
+
+                    this.showNotification('Startup settings saved', 'success');
+                });
+            });
+
+            // Homepage input handler
+            if (homepageInput) {
+                homepageInput.addEventListener('change', async () => {
+                    const settings = await this.loadSettings();
+                    let url = homepageInput.value.trim();
+
+                    // Add https:// if no protocol specified
+                    if (url && !url.match(/^[a-zA-Z]+:\/\//)) {
+                        url = 'https://' + url;
+                        homepageInput.value = url;
+                    }
+
+                    settings.homepage = url;
+                    this.homepage = url;
+                    await this.saveSettings(settings);
+                    this.showNotification('Homepage saved', 'success');
+                });
+            }
+
+            // Use current page button
+            if (useCurrentPageBtn) {
+                useCurrentPageBtn.addEventListener('click', async () => {
+                    const currentTab = this.getCurrentTab();
+                    if (currentTab && currentTab.url && currentTab.mode === 'web') {
+                        homepageInput.value = currentTab.url;
+                        const settings = await this.loadSettings();
+                        settings.homepage = currentTab.url;
+                        this.homepage = currentTab.url;
+                        await this.saveSettings(settings);
+                        this.showNotification('Homepage set to current page', 'success');
+                    } else {
+                        this.showNotification('Navigate to a website first', 'warning');
                     }
                 });
             }
@@ -15582,6 +16327,72 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 });
             }
 
+            // HTTP Proxy settings
+            const proxyEnabledCheckbox = container.querySelector('#proxy-enabled-setting');
+            const proxyConfig = container.querySelector('#proxy-config');
+            const proxyUrlInput = container.querySelector('#proxy-url-input');
+            const proxyBypassInput = container.querySelector('#proxy-bypass-input');
+
+            if (proxyEnabledCheckbox) {
+                proxyEnabledCheckbox.addEventListener('change', async () => {
+                    const settings = await this.loadSettings();
+                    settings.proxyEnabled = proxyEnabledCheckbox.checked;
+                    await this.saveSettings(settings);
+
+                    // Enable/disable the config inputs visually
+                    if (proxyConfig) {
+                        proxyConfig.style.opacity = proxyEnabledCheckbox.checked ? '1' : '0.5';
+                        proxyConfig.style.pointerEvents = proxyEnabledCheckbox.checked ? 'auto' : 'none';
+                    }
+
+                    // Apply proxy settings
+                    await window.electronAPI.setHttpProxy({
+                        enabled: settings.proxyEnabled,
+                        proxyUrl: settings.proxyUrl,
+                        bypassList: settings.proxyBypass
+                    });
+
+                    this.showNotification(
+                        proxyEnabledCheckbox.checked ? 'Proxy enabled' : 'Proxy disabled',
+                        'success'
+                    );
+                });
+            }
+
+            if (proxyUrlInput) {
+                proxyUrlInput.addEventListener('change', async () => {
+                    const settings = await this.loadSettings();
+                    settings.proxyUrl = proxyUrlInput.value.trim();
+                    await this.saveSettings(settings);
+
+                    if (settings.proxyEnabled) {
+                        await window.electronAPI.setHttpProxy({
+                            enabled: true,
+                            proxyUrl: settings.proxyUrl,
+                            bypassList: settings.proxyBypass
+                        });
+                    }
+                    this.showNotification('Proxy URL saved', 'success');
+                });
+            }
+
+            if (proxyBypassInput) {
+                proxyBypassInput.addEventListener('change', async () => {
+                    const settings = await this.loadSettings();
+                    settings.proxyBypass = proxyBypassInput.value.trim();
+                    await this.saveSettings(settings);
+
+                    if (settings.proxyEnabled) {
+                        await window.electronAPI.setHttpProxy({
+                            enabled: true,
+                            proxyUrl: settings.proxyUrl,
+                            bypassList: settings.proxyBypass
+                        });
+                    }
+                    this.showNotification('Proxy bypass list saved', 'success');
+                });
+            }
+
             // Update checking
             const checkUpdatesBtn = container.querySelector('#check-updates');
             const updateStatus = container.querySelector('#update-status');
@@ -15601,7 +16412,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                     const result = await window.electronAPI.checkForUpdates();
 
                     if (!result.success) {
-                        updateStatus.innerHTML = `<span style="color: #f44336;">Error: ${result.error}</span>`;
+                        updateStatus.textContent = `Error: ${result.error}`;
                         checkUpdatesBtn.disabled = false;
                         checkUpdatesBtn.textContent = 'Check for Updates';
                     }
@@ -15625,13 +16436,21 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             });
 
             window.electronAPI.onUpdateAvailable((info) => {
-                updateStatus.innerHTML = `<span style="color: #2196F3;">Update available: v${info.version}</span>`;
+                updateStatus.textContent = '';
+                const availSpan = document.createElement('span');
+                availSpan.style.color = '#2196F3';
+                availSpan.textContent = 'Update available: v' + info.version;
+                updateStatus.appendChild(availSpan);
                 updateProgress.style.display = 'block';
                 updateProgressText.textContent = 'Downloading update...';
             });
 
             window.electronAPI.onUpdateNotAvailable((info) => {
-                updateStatus.innerHTML = `<span style="color: #4CAF50;">✓ You're up to date! (v${info.version})</span>`;
+                updateStatus.textContent = '';
+                const upToDateSpan = document.createElement('span');
+                upToDateSpan.style.color = '#4CAF50';
+                upToDateSpan.textContent = '✓ You\'re up to date! (v' + info.version + ')';
+                updateStatus.appendChild(upToDateSpan);
                 if (checkUpdatesBtn) {
                     checkUpdatesBtn.disabled = false;
                     checkUpdatesBtn.textContent = 'Check for Updates';
@@ -15642,7 +16461,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             });
 
             window.electronAPI.onUpdateError((message) => {
-                updateStatus.innerHTML = `<span style="color: #f44336;">Update error: ${message}</span>`;
+                updateStatus.textContent = `Update error: ${message}`;
                 if (checkUpdatesBtn) {
                     checkUpdatesBtn.disabled = false;
                     checkUpdatesBtn.textContent = 'Check for Updates';
@@ -15656,7 +16475,11 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             });
 
             window.electronAPI.onUpdateDownloaded((info) => {
-                updateStatus.innerHTML = `<span style="color: #4CAF50;">✓ Update v${info.version} downloaded and ready to install</span>`;
+                updateStatus.textContent = '';
+                const dlSpan = document.createElement('span');
+                dlSpan.style.color = '#4CAF50';
+                dlSpan.textContent = '✓ Update v' + info.version + ' downloaded and ready to install';
+                updateStatus.appendChild(dlSpan);
                 updateProgress.style.display = 'none';
                 updateInstall.style.display = 'block';
                 if (checkUpdatesBtn) {
@@ -15712,15 +16535,19 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 });
                 const domain = new URL(item.url).hostname;
 
+                // SECURITY: Escape URL and domain in HTML attributes to prevent attribute injection
+                const escapedUrl = this.escapeHtml(item.url);
+                const escapedDomain = this.escapeHtml(domain);
+
                 historyHTML += `
-                    <div class="history-item" data-url="${item.url}">
+                    <div class="history-item" data-url="${escapedUrl}">
                         <div class="history-time">${time}</div>
                         <div class="history-favicon">
-                            <img src="https://www.google.com/s2/favicons?domain=${domain}" width="16" height="16" onerror="this.style.display='none'">
+                            <img src="https://www.google.com/s2/favicons?domain=${escapedDomain}" width="16" height="16" onerror="this.style.display='none'">
                         </div>
                         <div class="history-details">
                             <div class="history-title">${this.escapeHtml(item.title)}</div>
-                            <div class="history-url">${this.escapeHtml(item.url)}</div>
+                            <div class="history-url">${escapedUrl}</div>
                         </div>
                         <button class="history-remove" data-timestamp="${item.timestamp}">×</button>
                     </div>
@@ -15738,7 +16565,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             </div>
         `;
 
-        container.innerHTML = historyHTML;
+        container.innerHTML = DOMPurify.sanitize(historyHTML);
 
         // Add event listeners
         this.setupHistoryEventListeners(container);
@@ -16179,9 +17006,13 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     }
 
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        if (text == null) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     reopenClosedTab() {
@@ -16731,6 +17562,14 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 const tabs = JSON.parse(pinnedTabs);
                 tabs.forEach(tabData => {
                     if (tabData.url) {
+                        // SECURITY: Validate URL scheme from localStorage before loading
+                        const pinnedUrlLower = tabData.url.toLowerCase().trim();
+                        if (pinnedUrlLower.startsWith('javascript:') || pinnedUrlLower.startsWith('data:') ||
+                            pinnedUrlLower.startsWith('file:') || pinnedUrlLower.startsWith('blob:') ||
+                            pinnedUrlLower.startsWith('vbscript:')) {
+                            console.warn('Blocked dangerous URL scheme in pinned tab:', tabData.url.substring(0, 50));
+                            return;
+                        }
                         const newTabId = this.createTab(tabData.url);
                         const tab = this.tabs.find(t => t.id === newTabId);
                         if (tab) {
@@ -16776,7 +17615,13 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         return {
             restoreTabsOnStartup: false,
             saveHistory: true,
-            blockThirdPartyCookies: false
+            blockThirdPartyCookies: false,
+            homepage: '',  // Empty means new tab page
+            startupBehavior: 'newTab',  // 'newTab', 'restore', 'homepage'
+            proxyEnabled: false,
+            proxyUrl: '',        // e.g., "http://proxy.example.com:8080"
+            proxyBypass: '',     // e.g., "localhost,127.0.0.1,.local"
+            theme: 'light'       // 'light', 'dark', 'blue'
         };
     }
 
@@ -16858,6 +17703,14 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
 
                 tabState.forEach((tabData, index) => {
                     if (tabData.url) {
+                        // SECURITY: Validate URL scheme from localStorage before loading
+                        const stateUrlLower = tabData.url.toLowerCase().trim();
+                        if (stateUrlLower.startsWith('javascript:') || stateUrlLower.startsWith('data:') ||
+                            stateUrlLower.startsWith('file:') || stateUrlLower.startsWith('blob:') ||
+                            stateUrlLower.startsWith('vbscript:')) {
+                            console.warn('Blocked dangerous URL scheme in tab state:', tabData.url.substring(0, 50));
+                            return;
+                        }
                         const newTabId = this.createTab(tabData.url);
                         const tab = this.tabs.find(t => t.id === newTabId);
                         if (tab) {
@@ -17094,7 +17947,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 if (webview) {
                     // Execute JavaScript in the webview to copy the image URL
                     webview.executeJavaScript(`
-                        navigator.clipboard.writeText('${this.currentImageUrl}')
+                        navigator.clipboard.writeText(${JSON.stringify(String(this.currentImageUrl || ''))})
                             .catch(err => console.error('Failed to copy:', err));
                     `);
                     this.showNotification('✅ Image URL copied to clipboard', 2000);
@@ -17260,10 +18113,8 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             const img = document.createElement('img');
             img.className = 'autocomplete-item-icon';
 
-            // Use favicon if it's a valid URL (not our placeholder SVG)
-            if (item.favicon &&
-                !item.favicon.includes('data:image/svg+xml,<svg') &&
-                !item.favicon.includes('PHN2ZyB4bWxucz0i')) {
+            // Use favicon if it's a safe URL (no SVG which can contain scripts)
+            if (item.favicon && isSafeFaviconUrl(item.favicon)) {
                 img.src = item.favicon;
             } else {
                 // Use a globe icon as default
@@ -17634,9 +18485,13 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     }
 
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
+        if (text == null) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     getDomainFromUrl(url) {
@@ -17938,11 +18793,11 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             // Set up streaming listeners
             window.electronAPI.onSummaryStreamChunk((data) => {
                 streamedContent += data.text;
-                answer.innerHTML = this.processMarkdownContent(streamedContent);
+                answer.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(streamedContent));
             });
 
             window.electronAPI.onSummaryStreamEnd((data) => {
-                answer.innerHTML = this.processMarkdownContent(data.fullContent);
+                answer.innerHTML = DOMPurify.sanitize(this.processMarkdownContent(data.fullContent));
                 window.electronAPI.removeSummaryStreamListeners();
             });
 
@@ -17950,7 +18805,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
                 answer.innerHTML = `
                     <div class="error">
                         <h3>Error generating answer</h3>
-                        <p>${data.error}</p>
+                        <p>${this.escapeHtml(data.error)}</p>
                     </div>
                 `;
                 window.electronAPI.removeSummaryStreamListeners();
@@ -17967,7 +18822,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             answer.innerHTML = `
                 <div class="error">
                     <h3>Error during question answering</h3>
-                    <p>${error.message}</p>
+                    <p>${this.escapeHtml(error.message)}</p>
                 </div>
             `;
         }
@@ -18003,7 +18858,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
 
             if (response.error) {
                 if (resultsList) {
-                    resultsList.innerHTML = DOMPurify.sanitize(`<div class="semantic-search-result error">Error: ${response.error}</div>`);
+                    resultsList.innerHTML = DOMPurify.sanitize(`<div class="semantic-search-result error">Error: ${this.escapeHtml(response.error)}</div>`);
                 }
                 return;
             }
@@ -18014,7 +18869,7 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         } catch (error) {
             console.error('Semantic search error:', error);
             if (resultsList) {
-                resultsList.innerHTML = DOMPurify.sanitize(`<div class="semantic-search-result error">Error: ${error.message}</div>`);
+                resultsList.innerHTML = DOMPurify.sanitize(`<div class="semantic-search-result error">Error: ${this.escapeHtml(error.message)}</div>`);
             }
         }
     }
@@ -18161,12 +19016,12 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             resultEl.className = 'semantic-search-result';
             resultEl.innerHTML = `
                 <div class="search-result-title">
-                    ${result.title}
+                    ${this.escapeHtml(result.title)}
                     <span class="search-result-score">${(result.score * 100).toFixed(0)}% match</span>
                 </div>
-                <div class="search-result-snippet">${result.snippet}</div>
-                <div class="search-result-context">${result.matchContext}</div>
-                <div class="search-result-url">${result.url}</div>
+                <div class="search-result-snippet">${this.escapeHtml(result.snippet)}</div>
+                <div class="search-result-context">${this.escapeHtml(result.matchContext)}</div>
+                <div class="search-result-url">${this.escapeHtml(result.url)}</div>
             `;
 
             // Click to switch to that tab
@@ -18335,7 +19190,10 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             return;
         }
 
-        this.downloadsList.innerHTML = this.downloads.map(download => {
+        // SECURITY: Build download items using DOM APIs to prevent XSS
+        // via malicious filenames or paths from download servers
+        this.downloadsList.innerHTML = '';
+        this.downloads.forEach(download => {
             const progress = download.totalBytes > 0
                 ? (download.receivedBytes / download.totalBytes) * 100
                 : 0;
@@ -18352,33 +19210,66 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
             const speed = download.speed > 0 ? this.formatSpeed(download.speed) : '';
             const remaining = download.timeRemaining > 0 ? this.formatTime(download.timeRemaining) : '';
 
-            return `
-                <div class="download-item ${statusClass}">
-                    <div class="download-info">
-                        <div class="download-name" title="${download.fileName}">${download.fileName}</div>
-                        <div class="download-status">${statusText}${speed ? ' - ' + speed : ''}${remaining ? ' - ' + remaining + ' left' : ''}</div>
-                    </div>
-                    ${download.state === 'progressing' ? `
-                        <div class="download-progress">
-                            <div class="download-progress-bar" style="width: ${progress}%"></div>
-                        </div>
-                    ` : ''}
-                    <div class="download-actions">
-                        ${download.state === 'completed' && download.path ? `
-                            <button class="download-action-btn" onclick="tabManager.openDownload('${download.path}')" title="Open file">
-                                <span>Open</span>
-                            </button>
-                            <button class="download-action-btn" onclick="tabManager.showDownloadInFolder('${download.path}')" title="Show in folder">
-                                <span>Show</span>
-                            </button>
-                        ` : ''}
-                        <button class="download-action-btn" onclick="tabManager.removeDownload('${download.id}')" title="Remove from list">
-                            <span>×</span>
-                        </button>
-                    </div>
-                </div>
-            `;
-        }).join('');
+            const item = document.createElement('div');
+            item.className = `download-item ${statusClass}`;
+
+            const info = document.createElement('div');
+            info.className = 'download-info';
+
+            const nameDiv = document.createElement('div');
+            nameDiv.className = 'download-name';
+            nameDiv.title = download.fileName;
+            nameDiv.textContent = download.fileName;
+            info.appendChild(nameDiv);
+
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'download-status';
+            statusDiv.textContent = statusText + (speed ? ' - ' + speed : '') + (remaining ? ' - ' + remaining + ' left' : '');
+            info.appendChild(statusDiv);
+
+            item.appendChild(info);
+
+            if (download.state === 'progressing') {
+                const progressDiv = document.createElement('div');
+                progressDiv.className = 'download-progress';
+                const bar = document.createElement('div');
+                bar.className = 'download-progress-bar';
+                bar.style.width = progress + '%';
+                progressDiv.appendChild(bar);
+                item.appendChild(progressDiv);
+            }
+
+            const actions = document.createElement('div');
+            actions.className = 'download-actions';
+
+            if (download.state === 'completed' && download.path) {
+                const openBtn = document.createElement('button');
+                openBtn.className = 'download-action-btn';
+                openBtn.title = 'Open file';
+                openBtn.innerHTML = '<span>Open</span>';
+                const openPath = download.path;
+                openBtn.addEventListener('click', () => tabManager.openDownload(openPath));
+                actions.appendChild(openBtn);
+
+                const showBtn = document.createElement('button');
+                showBtn.className = 'download-action-btn';
+                showBtn.title = 'Show in folder';
+                showBtn.innerHTML = '<span>Show</span>';
+                showBtn.addEventListener('click', () => tabManager.showDownloadInFolder(openPath));
+                actions.appendChild(showBtn);
+            }
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'download-action-btn';
+            removeBtn.title = 'Remove from list';
+            removeBtn.innerHTML = '<span>&times;</span>';
+            const downloadId = download.id;
+            removeBtn.addEventListener('click', () => tabManager.removeDownload(downloadId));
+            actions.appendChild(removeBtn);
+
+            item.appendChild(actions);
+            this.downloadsList.appendChild(item);
+        });
 
         this.updateDownloadsBadge();
     }
@@ -18539,9 +19430,15 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         }
     }
 
-    checkAndShowOnboarding() {
-        const hasSeenOnboarding = localStorage.getItem('hasSeenOnboarding') === 'true';
-        if (!hasSeenOnboarding) {
+    async checkAndShowOnboarding() {
+        try {
+            const { hasSeenOnboarding } = await window.electronAPI.getOnboardingState();
+            if (!hasSeenOnboarding) {
+                this.showOnboarding();
+            }
+        } catch (error) {
+            console.error('Error checking onboarding state:', error);
+            // Show onboarding if we can't check state
             this.showOnboarding();
         }
     }
@@ -18558,7 +19455,10 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
         if (!this.onboardingOverlay) return;
 
         this.onboardingOverlay.classList.add('hidden');
-        localStorage.setItem('hasSeenOnboarding', 'true');
+        // Save onboarding completion state to settings file via IPC
+        window.electronAPI.setOnboardingComplete().catch(error => {
+            console.error('Error saving onboarding state:', error);
+        });
     }
 
     nextOnboardingStep() {
@@ -18624,7 +19524,9 @@ ${failedActions.length > 0 ? '\nFailed steps:\n' + failedActions.map(f => `  •
     }
 
     resetOnboarding() {
-        localStorage.removeItem('hasSeenOnboarding');
+        window.electronAPI.resetOnboarding().catch(error => {
+            console.error('Error resetting onboarding:', error);
+        });
     }
 }
 

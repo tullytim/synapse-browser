@@ -27,9 +27,74 @@
 (function() {
     'use strict';
 
+    // SECURITY: Capture ipcRenderer before deleting window.require.
+    // _ipcRenderer is a closure variable — page scripts cannot access it even under
+    // contextIsolation:false because closures are opaque in a shared JS realm.
+    const _ipcRenderer = (typeof require === 'function') ? require('electron').ipcRenderer : null;
+
+    // SECURITY: Immediately remove Node.js/Electron bridge APIs from window so that
+    // page scripts have no path to them even if they run before the anti-detection
+    // section further below. Must happen right after capturing _ipcRenderer above.
+    try { delete window.require; } catch(e) {}
+    try { delete window.process; } catch(e) {}
+    try { delete window.Buffer; } catch(e) {}
+    try { delete window.global; } catch(e) {}
+
+    // SECURITY: Capture origin at preload init time (before any page script runs).
+    // Using window.location.origin inline in postMessage calls is a race condition:
+    // a page script could call history.replaceState() to change the path before
+    // the message is sent, potentially altering what origin the target check sees.
+    const _preloadOrigin = window.location.origin;
+
     // Set a marker to verify the preload script ran (in a non-detectable way)
     // Store in a closure variable instead of exposing on window
     const __SYNAPSE_PRELOAD_LOADED__ = true;
+
+    // Detect geolocation failures and notify main process so it can guide the user
+    // to enable Location Services in macOS System Settings.
+    if (navigator.geolocation && _ipcRenderer) {
+        const _origGetCurrentPosition = navigator.geolocation.getCurrentPosition.bind(navigator.geolocation);
+        const _origWatchPosition = navigator.geolocation.watchPosition.bind(navigator.geolocation);
+
+        const _wrapGeoError = (userErrorCb) => {
+            return function(err) {
+                // PERMISSION_DENIED (1) = browser or OS blocked it
+                // POSITION_UNAVAILABLE (2) = geolocation service failed (often OS-level denial on macOS)
+                if (err && (err.code === 1 || err.code === 2)) {
+                    _ipcRenderer.send('geolocation-failed', err.code);
+                }
+                if (userErrorCb) userErrorCb(err);
+            };
+        };
+
+        navigator.geolocation.getCurrentPosition = function(success, error, options) {
+            return _origGetCurrentPosition(success, _wrapGeoError(error), options);
+        };
+        navigator.geolocation.watchPosition = function(success, error, options) {
+            return _origWatchPosition(success, _wrapGeoError(error), options);
+        };
+    }
+
+    // Cmd+click (Mac) / Ctrl+click (other) on links should open in a new tab.
+    // Electron webviews don't natively emit new-window for modifier+click, so we
+    // detect it and notify the renderer via IPC (same path as right-click > Open in New Tab).
+    document.addEventListener('click', function(e) {
+        if (!(e.metaKey || e.ctrlKey)) return;
+        // Walk up from target to find an anchor element
+        let el = e.target;
+        while (el && el.tagName !== 'A') {
+            el = el.parentElement;
+        }
+        if (!el || !el.href) return;
+        const href = el.href;
+        // Only handle http(s) links
+        if (!href.startsWith('http:') && !href.startsWith('https:')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (_ipcRenderer) {
+            _ipcRenderer.sendToHost('open-link-in-new-tab', href);
+        }
+    }, true);
 
     // Disable WebAuthn API to prevent sites from detecting hardware key support
     // This prevents sites from requiring MFA keys when the browser can't actually use them
@@ -64,8 +129,9 @@
     }
 
     // Dark mode - expose activation function and check flag
-    // TEMPORARILY DISABLED TO DEBUG NYTIMES ISSUE
-    window.__activateDarkMode = function() {
+    // SECURITY: Non-enumerable to prevent discovery by page scripts
+    Object.defineProperty(window, '__activateDarkMode', {
+        value: function() {
         // Whitelist: Don't apply dark mode to these domains
         const hostname = window.location.hostname;
         const darkModeWhitelist = [
@@ -1222,7 +1288,7 @@
         const protectSectionStyles = () => {
             // Override setAttribute for all section elements
             const originalSetAttribute = Element.prototype.setAttribute;
-            Element.prototype.setAttribute = function(name, value) {
+            const patchedSetAttribute = function(name, value) {
                 if (this.tagName === 'SECTION' && name === 'style') {
                     // Force our background into the style attribute
                     if (!value.includes('background')) {
@@ -1231,6 +1297,13 @@
                 }
                 return originalSetAttribute.call(this, name, value);
             };
+            // SECURITY: Use defineProperty with configurable:false to prevent
+            // malicious page scripts from re-overriding the prototype method.
+            Object.defineProperty(Element.prototype, 'setAttribute', {
+                value: patchedSetAttribute,
+                writable: false,
+                configurable: false
+            });
 
             // No need for polling - MutationObserver handles section changes
         };
@@ -1311,7 +1384,19 @@
             protectSectionStyles();
             processAllIframes();
         }
-    };
+        },
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+
+    // SECURITY: Non-enumerable flag for dark mode state
+    Object.defineProperty(window, '__darkModeEnabled', {
+        value: false,
+        writable: true,
+        enumerable: false,
+        configurable: false
+    });
 
     // Call activation immediately if flag is already set
     if (window.__darkModeEnabled === true) {
@@ -1321,6 +1406,43 @@
     // Apply all modifications before page scripts load
     try {
         // console.log('[Preload] Starting anti-bot measures...');
+
+        // 0. Block localhost/CDP probing - PerimeterX and other bot detectors scan for debug ports
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options) {
+            if (typeof url === 'string') {
+                const lower = url.toLowerCase();
+                // Block requests to localhost that look like CDP probes
+                if (lower.includes('localhost') || lower.includes('127.0.0.1') || lower.includes('[::1]')) {
+                    if (lower.includes('/json') || lower.includes(':9222') || lower.includes(':9229') ||
+                        lower.includes(':9230') || lower.includes(':9221') || lower.match(/:9\d{3}/)) {
+                        return Promise.reject(new TypeError('Failed to fetch'));
+                    }
+                }
+            }
+            return originalFetch.apply(this, arguments);
+        };
+        // Make fetch look native
+        Object.defineProperty(window.fetch, 'toString', {
+            value: () => 'function fetch() { [native code] }',
+            writable: false,
+            configurable: false
+        });
+
+        // Also block XMLHttpRequest to localhost debug ports
+        const originalXHROpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url, ...args) {
+            if (typeof url === 'string') {
+                const lower = url.toLowerCase();
+                if (lower.includes('localhost') || lower.includes('127.0.0.1') || lower.includes('[::1]')) {
+                    if (lower.includes('/json') || lower.match(/:9\d{3}/)) {
+                        // Redirect to a URL that will fail
+                        url = 'http://localhost:1/__blocked__';
+                    }
+                }
+            }
+            return originalXHROpen.call(this, method, url, ...args);
+        };
 
         // 1. Override webdriver property to hide automation
         // CRITICAL: Don't use a getter - bot detection scripts check for this!
@@ -1414,33 +1536,9 @@
                         if (callback) callback(info);
                         return Promise.resolve(info);
                     }
-                },
-                loadTimes: function() {
-                    const now = Date.now() / 1000;
-                    return {
-                        commitLoadTime: now - 1,
-                        connectionInfo: 'h2',
-                        finishDocumentLoadTime: now,
-                        finishLoadTime: now,
-                        firstPaintAfterLoadTime: 0,
-                        firstPaintTime: now - 0.5,
-                        navigationType: 'Other',
-                        npnNegotiatedProtocol: 'h2',
-                        requestTime: now - 2,
-                        startLoadTime: now - 1.5,
-                        wasAlternateProtocolAvailable: false,
-                        wasFetchedViaSpdy: true,
-                        wasNpnNegotiated: true
-                    };
-                },
-                csi: function() {
-                    return {
-                        onloadT: Date.now(),
-                        pageT: Date.now() - 1000,
-                        startE: Date.now() - 2000,
-                        tran: 15
-                    };
                 }
+                // NOTE: loadTimes and csi removed - deprecated in Chrome 114+
+                // Having them is a bot signal for PerimeterX
             };
         }
         } catch(e) {
@@ -1574,8 +1672,12 @@
             configurable: false
         });
 
+        // Create named getter functions for plugins/mimeTypes
+        const pluginsGetter = function() { return pluginArray; };
+        mockedFunctions.add(pluginsGetter);
+
         Object.defineProperty(navigator, 'plugins', {
-            get: () => pluginArray,
+            get: pluginsGetter,
             configurable: false,
             enumerable: true
         });
@@ -1612,6 +1714,39 @@
         const originalHardwareConcurrency = navigator.hardwareConcurrency;
         const originalDeviceMemory = navigator.deviceMemory;
 
+        // Define getter functions that will be added to mockedFunctions
+        // These need to be regular functions (not arrows) to be added to mockedFunctions
+        const navGetters = {
+            languages: function() { return ['en-US', 'en']; },
+            vendor: function() { return 'Google Inc.'; },
+            vendorSub: function() { return ''; },
+            productSub: function() { return '20030107'; },
+            product: function() { return 'Gecko'; },
+            appCodeName: function() { return 'Mozilla'; },
+            appName: function() { return 'Netscape'; },
+            doNotTrack: function() { return null; },
+            pdfViewerEnabled: function() { return true; },
+            maxTouchPoints: function() { return 0; },
+            hardwareConcurrency: function() { return originalHardwareConcurrency || 8; },
+            deviceMemory: function() { return originalDeviceMemory || 8; },
+            platform: function() { return 'MacIntel'; },
+            userAgent: function() { return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'; },
+            connection: function() {
+                return originalConnection || {
+                    downlink: 10,
+                    effectiveType: '4g',
+                    rtt: 50,
+                    saveData: false,
+                    addEventListener: function() {},
+                    removeEventListener: function() {},
+                    dispatchEvent: function() { return true; }
+                };
+            },
+        };
+
+        // Add all navigator getters to mockedFunctions
+        Object.values(navGetters).forEach(fn => mockedFunctions.add(fn));
+
         // First try to delete the existing property
         try {
             delete navigator.languages;
@@ -1622,72 +1757,64 @@
         try {
             Object.defineProperties(navigator, {
                 languages: {
-                    get: () => ['en-US', 'en'],
+                    get: navGetters.languages,
                     configurable: true,
                     enumerable: true
                 },
             vendor: {
-                get: () => 'Google Inc.',
+                get: navGetters.vendor,
                 configurable: false
             },
             vendorSub: {
-                get: () => '',
+                get: navGetters.vendorSub,
                 configurable: false
             },
             productSub: {
-                get: () => '20030107',
+                get: navGetters.productSub,
                 configurable: false
             },
             product: {
-                get: () => 'Gecko',
+                get: navGetters.product,
                 configurable: false
             },
             appCodeName: {
-                get: () => 'Mozilla',
+                get: navGetters.appCodeName,
                 configurable: false
             },
             appName: {
-                get: () => 'Netscape',
+                get: navGetters.appName,
                 configurable: false
             },
             doNotTrack: {
-                get: () => null,
+                get: navGetters.doNotTrack,
                 configurable: false
             },
             pdfViewerEnabled: {
-                get: () => true,
+                get: navGetters.pdfViewerEnabled,
                 configurable: false
             },
             maxTouchPoints: {
-                get: () => 0,
+                get: navGetters.maxTouchPoints,
                 configurable: false
             },
             hardwareConcurrency: {
-                get: () => originalHardwareConcurrency || 8,
+                get: navGetters.hardwareConcurrency,
                 configurable: false
             },
             deviceMemory: {
-                get: () => originalDeviceMemory || 8,
+                get: navGetters.deviceMemory,
                 configurable: false
             },
             connection: {
-                get: () => originalConnection || {
-                    downlink: 10,
-                    effectiveType: '4g',
-                    rtt: 50,
-                    saveData: false,
-                    addEventListener: () => {},
-                    removeEventListener: () => {},
-                    dispatchEvent: () => true
-                },
+                get: navGetters.connection,
                 configurable: false
             },
             platform: {
-                get: () => 'MacIntel',
+                get: navGetters.platform,
                 configurable: false
             },
             userAgent: {
-                get: () => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36',
+                get: navGetters.userAgent,
                 configurable: false
             }
         });
@@ -1706,15 +1833,17 @@
         Object.defineProperty(navigator, 'userAgentData', {
             get: () => ({
                     brands: [
-                        { brand: "Chromium", version: "142" },
-                        { brand: "Not?A_Brand", version: "99" }
+                        { brand: "Google Chrome", version: "142" },
+                        { brand: "Not?A_Brand", version: "24" },
+                        { brand: "Chromium", version: "142" }
                     ],
                     mobile: false,
                     platform: "macOS",
                     getHighEntropyValues: () => Promise.resolve({
                         brands: [
-                            { brand: "Chromium", version: "142" },
-                            { brand: "Not?A_Brand", version: "99" }
+                            { brand: "Google Chrome", version: "142" },
+                            { brand: "Not?A_Brand", version: "24" },
+                            { brand: "Chromium", version: "142" }
                         ],
                         mobile: false,
                         platform: "macOS",
@@ -1722,7 +1851,7 @@
                         architecture: "arm",
                         bitness: "64",
                         model: "",
-                        uaFullVersion: "142.0.0.0"
+                        uaFullVersion: "142.0.6367.243"
                     }),
                     toJSON: function() {
                         return {
@@ -2201,8 +2330,7 @@
         if (navigator.mediaDevices?.enumerateDevices) mockedFunctions.add(navigator.mediaDevices.enumerateDevices);
         if (window.chrome?.runtime?.connect) mockedFunctions.add(window.chrome.runtime.connect);
         if (window.chrome?.runtime?.sendMessage) mockedFunctions.add(window.chrome.runtime.sendMessage);
-        if (window.chrome?.loadTimes) mockedFunctions.add(window.chrome.loadTimes);
-        if (window.chrome?.csi) mockedFunctions.add(window.chrome.csi);
+        // loadTimes and csi removed - deprecated APIs
         if (navigator.plugins?.item) mockedFunctions.add(navigator.plugins.item);
         if (navigator.plugins?.namedItem) mockedFunctions.add(navigator.plugins.namedItem);
         if (navigator.plugins?.refresh) mockedFunctions.add(navigator.plugins.refresh);
@@ -2227,6 +2355,13 @@
         if (navigator.clipboard?.writeText) mockedFunctions.add(navigator.clipboard.writeText);
         if (navigator.xr?.isSessionSupported) mockedFunctions.add(navigator.xr.isSessionSupported);
         if (navigator.xr?.requestSession) mockedFunctions.add(navigator.xr.requestSession);
+
+        // Add modified Object.* methods to look native
+        mockedFunctions.add(Object.getOwnPropertyDescriptor);
+        mockedFunctions.add(Object.keys);
+        mockedFunctions.add(Object.getOwnPropertyNames);
+        mockedFunctions.add(document.hasOwnProperty);
+        if (Error.prepareStackTrace) mockedFunctions.add(Error.prepareStackTrace);
 
         // 15. Remove Electron-specific window properties
         delete window.process;
@@ -2275,7 +2410,130 @@
 
         // 18. Notification permission - leave as is
 
-        // 19. Error stack traces - leave unmodified
+        // 19. Error stack traces - sanitize Electron paths
+        // Helper function to sanitize stack traces - more aggressive patterns
+        function sanitizeStack(stack) {
+            if (typeof stack !== 'string') return stack;
+            return stack
+                // Replace Electron-related paths
+                .replace(/[Ee]lectron/g, 'chrome')
+                .replace(/[Pp]reload/g, 'content')
+                .replace(/webview-content/g, 'content-script')
+                // Remove full file paths that might reveal Electron
+                .replace(/[A-Za-z]:[\\\/][^\s:)\]]+/g, '<anonymous>')
+                .replace(/\/Users\/[^\s:)\]]+/g, '<anonymous>')
+                .replace(/\/home\/[^\s:)\]]+/g, '<anonymous>')
+                .replace(/file:\/\/[^\s:)\]]+/g, '<anonymous>')
+                // Clean up Electron internal paths
+                .replace(/node:internal[^\s:)\]]*/g, '<anonymous>')
+                .replace(/node:electron[^\s:)\]]*/g, '<anonymous>');
+        }
+
+        // Use V8's prepareStackTrace to completely control stack format
+        const originalPrepareStackTrace = Error.prepareStackTrace;
+        Error.prepareStackTrace = function(error, structuredStackTrace) {
+            // Build a clean stack trace without revealing paths
+            const frames = structuredStackTrace.map(frame => {
+                const fn = frame.getFunctionName() || 'anonymous';
+                // Don't reveal actual file paths
+                const file = '<anonymous>';
+                const line = frame.getLineNumber() || 0;
+                const col = frame.getColumnNumber() || 0;
+                return `    at ${fn} (${file}:${line}:${col})`;
+            }).join('\n');
+            return `${error.name || 'Error'}: ${error.message || ''}\n${frames}`;
+        };
+        mockedFunctions.add(Error.prepareStackTrace);
+
+        // Also replace the global Error constructor as a backup
+        // This ensures we control the stack even if prepareStackTrace doesn't work
+        (function() {
+            const OriginalError = window.Error;
+            const stackSymbol = Symbol('sanitizedStack');
+            const rawStackSymbol = Symbol('rawStack');
+
+            // Helper to wrap an error's stack with lazy sanitization
+            function wrapErrorStack(error) {
+                // Store a flag to avoid infinite recursion
+                if (error[stackSymbol] !== undefined) return;
+
+                // Get the original stack descriptor
+                const origDesc = Object.getOwnPropertyDescriptor(error, 'stack');
+                let rawStack = null;
+
+                Object.defineProperty(error, 'stack', {
+                    get: function() {
+                        if (this[stackSymbol] !== undefined) {
+                            return this[stackSymbol];
+                        }
+                        // Get raw stack lazily
+                        if (rawStack === null) {
+                            if (origDesc && origDesc.value !== undefined) {
+                                rawStack = origDesc.value;
+                            } else if (origDesc && origDesc.get) {
+                                rawStack = origDesc.get.call(this);
+                            } else {
+                                // Fallback - access via Object.getOwnPropertyDescriptor on prototype
+                                rawStack = '';
+                            }
+                        }
+                        this[stackSymbol] = sanitizeStack(rawStack);
+                        return this[stackSymbol];
+                    },
+                    set: function(v) {
+                        this[stackSymbol] = sanitizeStack(v);
+                    },
+                    configurable: true,
+                    enumerable: false
+                });
+            }
+
+            window.Error = function Error(message) {
+                const error = new OriginalError(message);
+                wrapErrorStack(error);
+                return error;
+            };
+
+            // Preserve prototype chain
+            window.Error.prototype = OriginalError.prototype;
+            window.Error.prototype.constructor = window.Error;
+
+            // Copy static properties
+            window.Error.captureStackTrace = function(target, constructorOpt) {
+                OriginalError.captureStackTrace(target, constructorOpt);
+                wrapErrorStack(target);
+            };
+            window.Error.stackTraceLimit = OriginalError.stackTraceLimit;
+
+            // Preserve prepareStackTrace access
+            Object.defineProperty(window.Error, 'prepareStackTrace', {
+                get: function() { return OriginalError.prepareStackTrace; },
+                set: function(v) { OriginalError.prepareStackTrace = v; },
+                configurable: true
+            });
+
+            // Make Error look native
+            mockedFunctions.add(window.Error);
+            if (window.Error.captureStackTrace) {
+                mockedFunctions.add(window.Error.captureStackTrace);
+            }
+
+            // Also wrap common Error subclasses
+            const errorTypes = ['TypeError', 'ReferenceError', 'SyntaxError', 'RangeError', 'URIError', 'EvalError'];
+            errorTypes.forEach(typeName => {
+                const OriginalType = window[typeName];
+                if (!OriginalType) return;
+
+                window[typeName] = function(message) {
+                    const error = new OriginalType(message);
+                    wrapErrorStack(error);
+                    return error;
+                };
+                window[typeName].prototype = OriginalType.prototype;
+                window[typeName].prototype.constructor = window[typeName];
+                mockedFunctions.add(window[typeName]);
+            });
+        })();
 
         // 20. User activation API - set realistic values
         if (!navigator.userActivation) {
@@ -2315,21 +2573,77 @@
             // Ignore if can't override
         }
 
-        // Add missing browser APIs that real browsers have
-        if (!window.Notification) {
-            window.Notification = class Notification {
-                constructor(title, options) {
-                    this.title = title;
-                    this.options = options;
+        // Override performance.navigation.type to avoid "fresh Electron window" detection
+        // Navigation type 0 = navigate (fresh), 1 = reload, 2 = back_forward
+        // We set it to 1 (reload) to break the detection heuristic
+        (function() {
+            try {
+                const originalNavigation = performance.navigation;
+                if (!originalNavigation) return;
+
+                // Create a fake navigation object that looks like a reload
+                const fakeNavigation = Object.create(PerformanceNavigation.prototype);
+                Object.defineProperties(fakeNavigation, {
+                    type: { value: 1, enumerable: true },  // TYPE_RELOAD
+                    redirectCount: { value: originalNavigation.redirectCount || 0, enumerable: true }
+                });
+                fakeNavigation.toJSON = function() {
+                    return { type: this.type, redirectCount: this.redirectCount };
+                };
+
+                // Try to override on Performance.prototype first, then performance instance
+                const targets = [Performance.prototype, performance];
+                for (const target of targets) {
+                    try {
+                        const desc = Object.getOwnPropertyDescriptor(target, 'navigation');
+                        if (desc === undefined || desc.configurable !== false) {
+                            Object.defineProperty(target, 'navigation', {
+                                get: function() { return fakeNavigation; },
+                                configurable: true,
+                                enumerable: true
+                            });
+                            break;
+                        }
+                    } catch (e) {
+                        // Try next target
+                    }
                 }
-                static requestPermission() {
-                    return Promise.resolve('default');
-                }
-                static get permission() {
-                    return 'default';
-                }
-            };
-        }
+            } catch (e) {
+                // Ignore if can't override
+            }
+        })();
+
+        // Override Notification to sync with Permissions API
+        // Both must return the same value to avoid detection
+        const notificationPermissionState = 'prompt'; // Match Permissions API
+
+        // Always override Notification to ensure consistency
+        const OriginalNotification = window.Notification;
+        window.Notification = class Notification {
+            constructor(title, options) {
+                this.title = title;
+                this.options = options;
+                // Don't actually show notifications to avoid detection
+            }
+            static requestPermission(callback) {
+                const result = Promise.resolve(notificationPermissionState);
+                if (callback) callback(notificationPermissionState);
+                return result;
+            }
+            static get permission() {
+                return notificationPermissionState;
+            }
+            static get maxActions() {
+                return 2;
+            }
+        };
+        // Make it look native
+        mockedFunctions.add(Notification.requestPermission);
+        Object.defineProperty(Notification, 'permission', {
+            get: function() { return notificationPermissionState; },
+            configurable: true
+        });
+        mockedFunctions.add(Object.getOwnPropertyDescriptor(Notification, 'permission').get);
 
         // Override document.documentElement.getAttribute to hide automation
         const originalGetAttribute = Element.prototype.getAttribute;
@@ -2343,29 +2657,66 @@
 
         // Add realistic window dimensions
         // Real browsers have outerWidth/Height that account for browser UI
-        const getRealisticOuterWidth = () => {
-            // Add a small amount for window borders (typically 0-2px on each side)
-            return window.innerWidth + 0;
-        };
+        // Try multiple approaches: Window.prototype, window instance, and self
+        (function() {
+            // Get original innerWidth/Height values
+            const getInnerWidth = () => {
+                const desc = Object.getOwnPropertyDescriptor(Window.prototype, 'innerWidth') ||
+                            Object.getOwnPropertyDescriptor(window, 'innerWidth');
+                if (desc && desc.get) {
+                    return desc.get.call(window);
+                }
+                return 1920; // fallback
+            };
 
-        const getRealisticOuterHeight = () => {
-            // Add height for browser chrome (toolbar, bookmarks bar, etc.)
-            // Typical Chrome has ~85-120px of chrome
-            return window.innerHeight + 85;
-        };
+            const getInnerHeight = () => {
+                const desc = Object.getOwnPropertyDescriptor(Window.prototype, 'innerHeight') ||
+                            Object.getOwnPropertyDescriptor(window, 'innerHeight');
+                if (desc && desc.get) {
+                    return desc.get.call(window);
+                }
+                return 1080; // fallback
+            };
 
-        Object.defineProperties(window, {
-            outerWidth: {
-                get: getRealisticOuterWidth,
-                configurable: true,
-                enumerable: true
-            },
-            outerHeight: {
-                get: getRealisticOuterHeight,
-                configurable: true,
-                enumerable: true
+            function outerWidthGetter() {
+                return getInnerWidth() + 16;
             }
-        });
+
+            function outerHeightGetter() {
+                return getInnerHeight() + 85;
+            }
+
+            mockedFunctions.add(outerWidthGetter);
+            mockedFunctions.add(outerHeightGetter);
+
+            // Try Window.prototype first (where these are usually defined)
+            const targets = [Window.prototype, window, self];
+            for (const target of targets) {
+                try {
+                    const outerWDesc = Object.getOwnPropertyDescriptor(target, 'outerWidth');
+                    const outerHDesc = Object.getOwnPropertyDescriptor(target, 'outerHeight');
+
+                    if (outerWDesc === undefined || outerWDesc.configurable !== false) {
+                        Object.defineProperty(target, 'outerWidth', {
+                            get: outerWidthGetter,
+                            configurable: true,
+                            enumerable: true
+                        });
+                    }
+
+                    if (outerHDesc === undefined || outerHDesc.configurable !== false) {
+                        Object.defineProperty(target, 'outerHeight', {
+                            get: outerHeightGetter,
+                            configurable: true,
+                            enumerable: true
+                        });
+                    }
+                    break; // Success, no need to try other targets
+                } catch (e) {
+                    // Try next target
+                }
+            }
+        })();
 
         // Ensure screen.width/height is greater than or equal to window dimensions
         // This is a common headless browser detection method
@@ -2465,23 +2816,178 @@
         // Silently skip - these anti-bot measures are optional and may fail in newer browsers
     }
 
-    // Add automation recording functionality with persistence
-    // Check if recording should be active (persists across navigations)
-    const checkAndStartRecording = function() {
-        const isRecording = sessionStorage.getItem('__automationRecording') === 'true';
-        if (isRecording) {
-            window.__startAutomationRecording();
-        }
-    };
+    // CRITICAL: Inject overrides directly into the page context via script element
+    // This ensures our overrides apply even when contextIsolation doesn't fully share contexts
+    (function injectPageContextOverrides() {
+        const scriptContent = `
+        (function() {
+            'use strict';
 
-    window.__startAutomationRecording = function() {
+            // 1. Override navigator properties
+            try {
+                // Languages - must have at least 2
+                Object.defineProperty(navigator, 'languages', {
+                    get: function() { return ['en-US', 'en']; },
+                    configurable: true
+                });
+
+                // Webdriver - must be false
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: function() { return false; },
+                    configurable: true
+                });
+
+                // Platform
+                Object.defineProperty(navigator, 'platform', {
+                    get: function() { return 'MacIntel'; },
+                    configurable: true
+                });
+
+                // Vendor
+                Object.defineProperty(navigator, 'vendor', {
+                    get: function() { return 'Google Inc.'; },
+                    configurable: true
+                });
+            } catch(e) {}
+
+            // 2. Override outerWidth/outerHeight to differ from innerWidth/innerHeight
+            try {
+                const innerWGetter = Object.getOwnPropertyDescriptor(Window.prototype, 'innerWidth')?.get;
+                const innerHGetter = Object.getOwnPropertyDescriptor(Window.prototype, 'innerHeight')?.get;
+
+                Object.defineProperty(window, 'outerWidth', {
+                    get: function() {
+                        const inner = innerWGetter ? innerWGetter.call(window) : 1920;
+                        return inner + 16;
+                    },
+                    configurable: true,
+                    enumerable: true
+                });
+
+                Object.defineProperty(window, 'outerHeight', {
+                    get: function() {
+                        const inner = innerHGetter ? innerHGetter.call(window) : 1080;
+                        return inner + 85;
+                    },
+                    configurable: true,
+                    enumerable: true
+                });
+            } catch(e) {}
+
+            // 3. Override performance.navigation.type to indicate reload (not fresh navigate)
+            try {
+                if (typeof PerformanceNavigation !== 'undefined') {
+                    const fakeNav = Object.create(PerformanceNavigation.prototype);
+                    Object.defineProperty(fakeNav, 'type', { value: 1, enumerable: true });
+                    Object.defineProperty(fakeNav, 'redirectCount', { value: 0, enumerable: true });
+                    fakeNav.toJSON = function() { return { type: 1, redirectCount: 0 }; };
+
+                    Object.defineProperty(performance, 'navigation', {
+                        get: function() { return fakeNav; },
+                        configurable: true,
+                        enumerable: true
+                    });
+                }
+            } catch(e) {}
+
+            // 4. Sanitize Error stack traces
+            Error.prepareStackTrace = function(error, stack) {
+                const frames = stack.map(function(frame) {
+                    const fn = frame.getFunctionName() || 'anonymous';
+                    const line = frame.getLineNumber() || 0;
+                    const col = frame.getColumnNumber() || 0;
+                    return '    at ' + fn + ' (<anonymous>:' + line + ':' + col + ')';
+                }).join('\\n');
+                return (error.name || 'Error') + ': ' + (error.message || '') + '\\n' + frames;
+            };
+
+            // 5. Ensure plugins look correct
+            try {
+                if (navigator.plugins.length === 0) {
+                    // Create fake plugins if none exist
+                    const fakePlugins = {
+                        length: 5,
+                        item: function(i) { return this[i]; },
+                        namedItem: function(name) { return null; },
+                        refresh: function() {},
+                        0: { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                        1: { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: '' },
+                        2: { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: '' },
+                        3: { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: '' },
+                        4: { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: '' }
+                    };
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: function() { return fakePlugins; },
+                        configurable: true
+                    });
+                }
+            } catch(e) {}
+        })();
+        `;
+
+        // Inject as early as possible using multiple methods
+        const injectScript = function() {
+            const script = document.createElement('script');
+            script.textContent = scriptContent;
+            // Insert at the very beginning
+            const target = document.documentElement || document.head || document.body;
+            if (target) {
+                if (target.firstChild) {
+                    target.insertBefore(script, target.firstChild);
+                } else {
+                    target.appendChild(script);
+                }
+            }
+        };
+
+        // Method 1: Inject immediately if document is ready
+        if (document.documentElement) {
+            injectScript();
+        }
+
+        // Method 2: Use DOMContentLoaded as backup
+        document.addEventListener('DOMContentLoaded', injectScript, { once: true });
+
+        // Method 3: MutationObserver for very early injection
+        if (!document.documentElement) {
+            const observer = new MutationObserver(function(mutations, obs) {
+                if (document.documentElement) {
+                    injectScript();
+                    obs.disconnect();
+                }
+            });
+            observer.observe(document, { childList: true, subtree: true });
+        }
+    })();
+
+    // Add automation recording functionality with persistence
+    // SECURITY: Request automation token from the main process via synchronous IPC.
+    // The main process generates it using Node.js crypto.randomBytes(), which is
+    // not hookable by page scripts (unlike window.crypto.getRandomValues which runs
+    // in the shared JS realm under contextIsolation:false). The token is never
+    // exposed on window — the renderer retrieves it via get-webview-automation-token IPC,
+    // which the page cannot call because nodeIntegration:false and ipcRenderer is not on window.
+    const automationToken = _ipcRenderer ? _ipcRenderer.sendSync('webview-request-automation-token') : null;
+
+    // checkAndStartRecording removed: sessionStorage-based auto-start was a
+    // security risk - malicious pages could set sessionStorage.__automationRecording
+    // to hijack recording without a valid token.
+
+    Object.defineProperty(window, '__automationRecording', {
+        value: false,
+        writable: true,
+        enumerable: false,
+        configurable: false
+    });
+
+    function startRecordingInternal() {
         if (window.__automationRecording) {
             return;
         }
 
         window.__automationRecording = true;
-        // Store in sessionStorage to persist across page navigations
-        sessionStorage.setItem('__automationRecording', 'true');
+        // Recording state is NOT persisted in sessionStorage to prevent
+        // malicious pages from hijacking recording via sessionStorage manipulation.
 
         // Add visual indicator
         const indicator = document.createElement('div');
@@ -2512,17 +3018,16 @@
                 setTimeout(() => { ind.style.background = 'red'; }, 200);
             }
 
-            // Send action via console.log for webview communication
-            console.log('AUTOMATION_ACTION:' + JSON.stringify(action));
+            // Action data sent via IPC only (console.log removed for security)
 
             // Try to use IPC to send to host
             try {
-                // In webview context, we need to use postMessage to communicate with the host
+                // SECURITY: Use specific origin instead of '*' to prevent data leakage
                 if (window.parent && window.parent !== window) {
                     window.parent.postMessage({
                         type: 'AUTOMATION_ACTION',
                         action: action
-                    }, '*');
+                    }, _preloadOrigin);
                 }
             } catch (err) {
                 // Silently handle error
@@ -3340,26 +3845,45 @@
             });
         }, true);
 
-    };
-
-    // Add stop recording function
-    window.__stopAutomationRecording = function() {
-        window.__automationRecording = false;
-        sessionStorage.removeItem('__automationRecording');
-
-        const indicator = document.getElementById('recording-indicator');
-        if (indicator) {
-            indicator.remove();
-        }
-    };
-
-    // Auto-start recording if it was active before navigation
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', checkAndStartRecording);
-    } else {
-        // DOM already loaded, check immediately
-        checkAndStartRecording();
     }
+
+    // SECURITY: Public recording functions require the automation token.
+    // This prevents malicious pages from silently recording user keystrokes/passwords.
+    // SECURITY: Non-enumerable to prevent discovery by page scripts
+    Object.defineProperty(window, '__startAutomationRecording', {
+        value: function(token) {
+            if (token !== automationToken) {
+                console.warn('Automation recording blocked: invalid token');
+                return;
+            }
+            startRecordingInternal();
+        },
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+
+    Object.defineProperty(window, '__stopAutomationRecording', {
+        value: function(token) {
+            if (token !== automationToken) {
+                console.warn('Automation stop blocked: invalid token');
+                return;
+            }
+            window.__automationRecording = false;
+            // sessionStorage persistence removed for security
+
+            const indicator = document.getElementById('recording-indicator');
+            if (indicator) {
+                indicator.remove();
+            }
+        },
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+
+    // Auto-start from sessionStorage removed for security.
+    // Recording must be explicitly started via token-gated API.
 
     // Auto-focus body when page loads to enable keyboard navigation
     window.addEventListener('DOMContentLoaded', function() {
@@ -3390,4 +3914,5 @@
         }
     };
     focusBody();
+
 })();

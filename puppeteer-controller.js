@@ -27,6 +27,20 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 
+// SECURITY: Escape a string for safe embedding in XPath single-quoted literals.
+// XPath has no escape character inside strings, so we split on quotes and use concat().
+function escapeXPathString(str) {
+    if (!str.includes("'")) {
+        return `'${str}'`;
+    }
+    if (!str.includes('"')) {
+        return `"${str}"`;
+    }
+    // Contains both quote types — use concat()
+    const parts = str.split("'").map(part => `'${part}'`);
+    return `concat(${parts.join(`,"'",`)})`;
+}
+
 // TEMPORARILY DISABLE stealth plugin - it might conflict with our preload script
 // Our webview-preload.js is more comprehensive anyway
 // puppeteer.use(StealthPlugin());
@@ -241,7 +255,8 @@ class PuppeteerController {
                 text = text.slice(1, -1);
             }
             // Use normalize-space to handle whitespace and make it more robust
-            actualSelector = `//*[normalize-space(text())='${text}' or normalize-space()='${text}']`;
+            const safeText = escapeXPathString(text);
+            actualSelector = `//*[normalize-space(text())=${safeText} or normalize-space()=${safeText}]`;
         }
 
         // Handle jQuery :eq() pseudo-selector and /*positional*/ comments
@@ -426,7 +441,8 @@ class PuppeteerController {
         let actualSelector = selector;
         if (selector.startsWith('text=')) {
             const textContent = selector.substring(5).replace(/"/g, '');
-            actualSelector = `//*[contains(text(), '${textContent}')]`;
+            const safeTextContent = escapeXPathString(textContent);
+            actualSelector = `//*[contains(text(), ${safeTextContent})]`;
         }
 
         // Handle jQuery :eq() pseudo-selector and /*positional*/ comments
@@ -587,7 +603,8 @@ class PuppeteerController {
                 text = text.slice(1, -1);
             }
             // Use normalize-space to handle whitespace and make it more robust
-            actualSelector = `//*[normalize-space(text())='${text}' or normalize-space()='${text}']`;
+            const safeText = escapeXPathString(text);
+            actualSelector = `//*[normalize-space(text())=${safeText} or normalize-space()=${safeText}]`;
         }
 
         // Handle jQuery :eq() pseudo-selector and /*positional*/ comments
@@ -859,14 +876,16 @@ class PuppeteerController {
             const labelMatch = selector.match(/\[aria-label="([^"]+)"\]/);
             if (labelMatch) {
                 const label = labelMatch[1];
-                // Try different variations
+                // SECURITY: Escape for safe interpolation into CSS and XPath
+                const cssLabel = label.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                const xpathLabel = escapeXPathString(label);
                 alternatives.push(
-                    `//*[@aria-label="${label}"]`, // XPath version
-                    `*[aria-label="${label}"]`,
-                    `[aria-label="${label}"]`,
-                    `button[aria-label="${label}"]`,
-                    `a[aria-label="${label}"]`,
-                    `input[aria-label="${label}"]`
+                    `//*[@aria-label=${xpathLabel}]`,
+                    `*[aria-label="${cssLabel}"]`,
+                    `[aria-label="${cssLabel}"]`,
+                    `button[aria-label="${cssLabel}"]`,
+                    `a[aria-label="${cssLabel}"]`,
+                    `input[aria-label="${cssLabel}"]`
                 );
             }
         }
@@ -881,8 +900,8 @@ class PuppeteerController {
                 alternatives.push(`.${classes[classes.length - 1]}`);
                 // Try as attribute selector with all classes
                 alternatives.push(`[class="${classes.join(' ')}"]`);
-                // Try XPath with all classes
-                const xpathClasses = classes.map(c => `contains(@class, "${c}")`).join(' and ');
+                // Try XPath with all classes (escape for safe interpolation)
+                const xpathClasses = classes.map(c => `contains(@class, ${escapeXPathString(c)})`).join(' and ');
                 alternatives.push(`//*[${xpathClasses}]`);
             }
         }
@@ -890,23 +909,24 @@ class PuppeteerController {
         // Handle Playwright text selectors
         if (selector.startsWith('text=')) {
             const text = selector.substring(5).replace(/"/g, '');
+            const safeText = escapeXPathString(text);
             // Order from most specific to least specific
             // Avoid overly generic selectors like 'div' and 'span'
             alternatives.push(
-                `//button[contains(text(), '${text}')]`,
-                `//a[contains(text(), '${text}')]`,
-                `//input[@value='${text}']`,
-                `//label[contains(text(), '${text}')]`,
-                `//h1[contains(text(), '${text}')]`,
-                `//h2[contains(text(), '${text}')]`,
-                `//h3[contains(text(), '${text}')]`,
-                `//li[contains(text(), '${text}')]`,
-                `//td[contains(text(), '${text}')]`,
-                `//th[contains(text(), '${text}')]`,
-                `//*[@title='${text}']`,
-                `//*[@aria-label='${text}']`,
-                `//*[contains(text(), '${text}')]`,
-                `//*[contains(., '${text}')]`
+                `//button[contains(text(), ${safeText})]`,
+                `//a[contains(text(), ${safeText})]`,
+                `//input[@value=${safeText}]`,
+                `//label[contains(text(), ${safeText})]`,
+                `//h1[contains(text(), ${safeText})]`,
+                `//h2[contains(text(), ${safeText})]`,
+                `//h3[contains(text(), ${safeText})]`,
+                `//li[contains(text(), ${safeText})]`,
+                `//td[contains(text(), ${safeText})]`,
+                `//th[contains(text(), ${safeText})]`,
+                `//*[@title=${safeText}]`,
+                `//*[@aria-label=${safeText}]`,
+                `//*[contains(text(), ${safeText})]`,
+                `//*[contains(., ${safeText})]`
             );
             return alternatives;
         }
@@ -923,11 +943,12 @@ class PuppeteerController {
             const nameMatch = selector.match(/name=["']?([^"'\]]+)["']?\]?/);
             if (nameMatch) {
                 const name = nameMatch[1];
+                const cssName = name.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
                 alternatives.push(
-                    `input[name="${name}"]`,
-                    `textarea[name="${name}"]`,
-                    `select[name="${name}"]`,
-                    `[name="${name}"]`
+                    `input[name="${cssName}"]`,
+                    `textarea[name="${cssName}"]`,
+                    `select[name="${cssName}"]`,
+                    `[name="${cssName}"]`
                 );
             }
         }
@@ -935,9 +956,11 @@ class PuppeteerController {
         // If it's an ID selector, try without # and as attribute
         if (selector.startsWith('#')) {
             const id = selector.substring(1).split('.')[0]; // Handle #id.class cases
+            const cssId = id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            const xpathId = escapeXPathString(id);
             alternatives.push(
-                `[id="${id}"]`,
-                `//*[@id="${id}"]` // XPath version
+                `[id="${cssId}"]`,
+                `//*[@id=${xpathId}]`
             );
         }
 
@@ -946,10 +969,11 @@ class PuppeteerController {
             const placeholderMatch = selector.match(/placeholder=["']?([^"']+)["']?/);
             if (placeholderMatch) {
                 const placeholder = placeholderMatch[1];
+                const cssPh = placeholder.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
                 alternatives.push(
-                    `input[placeholder="${placeholder}"]`,
-                    `textarea[placeholder="${placeholder}"]`,
-                    `[placeholder*="${placeholder}"]`
+                    `input[placeholder="${cssPh}"]`,
+                    `textarea[placeholder="${cssPh}"]`,
+                    `[placeholder*="${cssPh}"]`
                 );
             }
         }
@@ -965,6 +989,11 @@ class PuppeteerController {
     async findByText(text, tagName = '*') {
         if (!this.page) {
             throw new Error('Not connected to any page');
+        }
+
+        // SECURITY: Validate tagName is a simple HTML element name or wildcard
+        if (tagName !== '*' && !/^[a-zA-Z][a-zA-Z0-9]*$/.test(tagName)) {
+            throw new Error('Invalid tag name: must be a valid HTML element name');
         }
 
         const element = await this.page.evaluateHandle((text, tag) => {

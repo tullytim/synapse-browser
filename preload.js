@@ -24,57 +24,56 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// SECURITY (finding 13): Track ALL ipcRenderer listeners by channel to prevent
+// accumulation when onXxx functions are called multiple times. Each channel stores
+// exactly one listener at a time; calling onXxx again replaces the previous listener.
+const _listeners = new Map();
+
+function _registerListener(channel, callback) {
+    const prev = _listeners.get(channel);
+    if (prev) ipcRenderer.removeListener(channel, prev);
+    _listeners.set(channel, callback);
+    ipcRenderer.on(channel, callback);
+}
+
+function _removeListeners(channels) {
+    for (const channel of channels) {
+        const handler = _listeners.get(channel);
+        if (handler) {
+            ipcRenderer.removeListener(channel, handler);
+            _listeners.delete(channel);
+        }
+    }
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
     claudeSearchStream: (query, model) => ipcRenderer.invoke('claude-search-stream', query, model),
     inceptionSearchStream: (query, model) => ipcRenderer.invoke('inception-search-stream', query, model),
     summarizePageStream: (pageText, model, customPrompt) => ipcRenderer.invoke('summarize-page-stream', pageText, model, customPrompt),
 
     // Stream event listeners
-    onClaudeStreamChunk: (callback) => {
-        ipcRenderer.on('claude-stream-chunk', (event, data) => callback(data));
-    },
-    onClaudeStreamEnd: (callback) => {
-        ipcRenderer.on('claude-stream-end', (event, data) => callback(data));
-    },
-    onClaudeStreamError: (callback) => {
-        ipcRenderer.on('claude-stream-error', (event, data) => callback(data));
-    },
-    onInceptionStreamChunk: (callback) => {
-        ipcRenderer.on('inception-stream-chunk', (event, data) => callback(data));
-    },
-    onInceptionStreamEnd: (callback) => {
-        ipcRenderer.on('inception-stream-end', (event, data) => callback(data));
-    },
-    onInceptionStreamError: (callback) => {
-        ipcRenderer.on('inception-stream-error', (event, data) => callback(data));
-    },
-    onSummaryStreamChunk: (callback) => {
-        ipcRenderer.on('summary-stream-chunk', (event, data) => callback(data));
-    },
-    onSummaryStreamEnd: (callback) => {
-        ipcRenderer.on('summary-stream-end', (event, data) => callback(data));
-    },
-    onSummaryStreamError: (callback) => {
-        ipcRenderer.on('summary-stream-error', (event, data) => callback(data));
-    },
+    onClaudeStreamChunk: (callback) => { _registerListener('claude-stream-chunk', (_e, data) => callback(data)); },
+    onClaudeStreamEnd: (callback) => { _registerListener('claude-stream-end', (_e, data) => callback(data)); },
+    onClaudeStreamError: (callback) => { _registerListener('claude-stream-error', (_e, data) => callback(data)); },
+    onInceptionStreamChunk: (callback) => { _registerListener('inception-stream-chunk', (_e, data) => callback(data)); },
+    onInceptionStreamEnd: (callback) => { _registerListener('inception-stream-end', (_e, data) => callback(data)); },
+    onInceptionStreamError: (callback) => { _registerListener('inception-stream-error', (_e, data) => callback(data)); },
+    onSummaryStreamChunk: (callback) => { _registerListener('summary-stream-chunk', (_e, data) => callback(data)); },
+    onSummaryStreamEnd: (callback) => { _registerListener('summary-stream-end', (_e, data) => callback(data)); },
+    onSummaryStreamError: (callback) => { _registerListener('summary-stream-error', (_e, data) => callback(data)); },
 
-    // Remove stream listeners
+    // Remove stream listeners — removes only the specific handlers registered above,
+    // not all listeners on the channel.
     removeClaudeStreamListeners: () => {
-        ipcRenderer.removeAllListeners('claude-stream-chunk');
-        ipcRenderer.removeAllListeners('claude-stream-end');
-        ipcRenderer.removeAllListeners('claude-stream-error');
+        _removeListeners(['claude-stream-chunk', 'claude-stream-end', 'claude-stream-error']);
     },
     removeInceptionStreamListeners: () => {
-        ipcRenderer.removeAllListeners('inception-stream-chunk');
-        ipcRenderer.removeAllListeners('inception-stream-end');
-        ipcRenderer.removeAllListeners('inception-stream-error');
+        _removeListeners(['inception-stream-chunk', 'inception-stream-end', 'inception-stream-error']);
     },
     removeSummaryStreamListeners: () => {
-        ipcRenderer.removeAllListeners('summary-stream-chunk');
-        ipcRenderer.removeAllListeners('summary-stream-end');
-        ipcRenderer.removeAllListeners('summary-stream-error');
+        _removeListeners(['summary-stream-chunk', 'summary-stream-end', 'summary-stream-error']);
     },
-    
+
     setApiKey: (key) => ipcRenderer.invoke('set-api-key', key),
     getApiKeyStatus: () => ipcRenderer.invoke('get-api-key-status'),
     getApiKey: () => ipcRenderer.invoke('get-api-key'),
@@ -85,9 +84,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     newIncognitoWindow: () => ipcRenderer.invoke('new-incognito-window'),
     newWindowWithUrl: (url) => ipcRenderer.invoke('new-window-with-url', url),
     newIncognitoWindowWithUrl: (url) => ipcRenderer.invoke('new-incognito-window-with-url', url),
-    onOpenInNewTab: (callback) => ipcRenderer.on('open-in-new-tab', (event, url) => callback(url)),
+    onOpenInNewTab: (callback) => _registerListener('open-in-new-tab', (_e, url) => callback(url)),
     startCast: (url, title) => ipcRenderer.invoke('start-cast', url, title),
-    analyzeBookmark: (url, title, description, keywords, content, model) => 
+    analyzeBookmark: (url, title, description, keywords, content, model) =>
         ipcRenderer.invoke('analyze-bookmark', url, title, description, keywords, content, model),
     generateSearchSuggestions: (url, title, content, model) =>
         ipcRenderer.invoke('generate-search-suggestions', url, title, content, model),
@@ -96,6 +95,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     computerUseClaude: (params) => ipcRenderer.invoke('computer-use-claude', params),
     computerUseAction: (action, webviewId) => ipcRenderer.invoke('computer-use-action', action, webviewId),
     openExternal: (url) => ipcRenderer.invoke('open-external', url),
+    // SECURITY (finding 10): Separate channel for OS custom-scheme URLs (spotify:, mailto:, etc.)
+    // so the main process can enforce a strict scheme allowlist independently of openExternal.
+    openExternalApp: (url) => ipcRenderer.invoke('open-external-app', url),
     controlVolume: (direction) => ipcRenderer.invoke('control-volume', direction),
     showSaveDialog: (defaultFileName) => ipcRenderer.invoke('show-save-dialog', defaultFileName),
     getTempPath: (filename) => ipcRenderer.invoke('get-temp-path', filename),
@@ -108,10 +110,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     setGpuAcceleration: (enabled) => ipcRenderer.invoke('set-gpu-acceleration', enabled),
     getAdBlocker: () => ipcRenderer.invoke('get-ad-blocker'),
     setAdBlocker: (enabled) => ipcRenderer.invoke('set-ad-blocker', enabled),
-    onAdBlockerChanged: (callback) => ipcRenderer.on('ad-blocker-changed', (event, enabled) => callback(enabled)),
+    onAdBlockerChanged: (callback) => _registerListener('ad-blocker-changed', (_e, enabled) => callback(enabled)),
     getTrackerBlocker: () => ipcRenderer.invoke('get-tracker-blocker'),
     setTrackerBlocker: (enabled) => ipcRenderer.invoke('set-tracker-blocker', enabled),
-    onTrackerBlockerChanged: (callback) => ipcRenderer.on('tracker-blocker-changed', (event, enabled) => callback(enabled)),
+    onTrackerBlockerChanged: (callback) => _registerListener('tracker-blocker-changed', (_e, enabled) => callback(enabled)),
     closeWindow: () => ipcRenderer.invoke('close-window'),
 
     // Puppeteer Automation APIs
@@ -123,42 +125,51 @@ contextBridge.exposeInMainWorld('electronAPI', {
     automationStatus: () => ipcRenderer.invoke('automation-status'),
     automationStartRecording: (url) => ipcRenderer.invoke('automation-start-recording', url),
     automationStopRecording: () => ipcRenderer.invoke('automation-stop-recording'),
-    sendRecordingAction: (action) => ipcRenderer.send('recording-action', action),
-    onAutomationMessage: (callback) => ipcRenderer.on('automation-message', (event, message) => callback(message)),
+    // SECURITY (finding 14): Use invoke (request/response) instead of fire-and-forget send.
+    // This ensures errors are surfaced and the main-process handler can validate the action
+    // schema and return a result.
+    sendRecordingAction: (action) => ipcRenderer.invoke('recording-action', action),
+    onAutomationMessage: (callback) => _registerListener('automation-message', (_e, message) => callback(message)),
+    getWebviewAutomationToken: (webviewId) => ipcRenderer.invoke('get-webview-automation-token', webviewId),
+
+    // SECURITY (finding 15): IPC-backed file storage for automation recordings to keep
+    // recording data (which may contain typed text) out of the renderer's JS-accessible storage.
+    loadAutomations: () => ipcRenderer.invoke('load-automations'),
+    saveAutomations: (data) => ipcRenderer.invoke('save-automations', data),
 
     // Menu event listeners
-    onToggleBookmarksBar: (callback) => ipcRenderer.on('toggle-bookmarks-bar', callback),
-    onBookmarkCurrentPage: (callback) => ipcRenderer.on('bookmark-current-page', callback),
-    onShowAllBookmarks: (callback) => ipcRenderer.on('show-all-bookmarks', callback),
-    onOpenBookmark: (callback) => ipcRenderer.on('open-bookmark', (event, url) => callback(url)),
+    onToggleBookmarksBar: (callback) => _registerListener('toggle-bookmarks-bar', callback),
+    onBookmarkCurrentPage: (callback) => _registerListener('bookmark-current-page', callback),
+    onShowAllBookmarks: (callback) => _registerListener('show-all-bookmarks', callback),
+    onOpenBookmark: (callback) => _registerListener('open-bookmark', (_e, url) => callback(url)),
     updateBookmarksMenu: (bookmarks) => ipcRenderer.send('update-bookmarks-menu', bookmarks),
     setBookmarksBarVisible: (visible) => ipcRenderer.send('set-bookmarks-bar-visible', visible),
-    onFocusAddressBar: (callback) => ipcRenderer.on('focus-address-bar', callback),
-    onNewTab: (callback) => ipcRenderer.on('new-tab', callback),
-    onNewIncognitoTab: (callback) => ipcRenderer.on('new-incognito-tab', callback),
-    onReopenClosedTab: (callback) => ipcRenderer.on('reopen-closed-tab', callback),
-    onSavePageAs: (callback) => ipcRenderer.on('save-page-as', callback),
-    onPrintPage: (callback) => ipcRenderer.on('print-page', callback),
-    onShowHistory: (callback) => ipcRenderer.on('show-history', callback),
-    onClearBrowsingData: (callback) => ipcRenderer.on('clear-browsing-data', callback),
-    onNextTab: (callback) => ipcRenderer.on('next-tab', callback),
-    onPreviousTab: (callback) => ipcRenderer.on('previous-tab', callback),
-    onMoveTabRight: (callback) => ipcRenderer.on('move-tab-right', callback),
-    onMoveTabLeft: (callback) => ipcRenderer.on('move-tab-left', callback),
-    onDuplicateTab: (callback) => ipcRenderer.on('duplicate-tab', callback),
-    onReloadPage: (callback) => ipcRenderer.on('reload-page', callback),
-    onForceReloadPage: (callback) => ipcRenderer.on('force-reload-page', callback),
-    onFindInPage: (callback) => ipcRenderer.on('find-in-page', callback),
-    onResetZoom: (callback) => ipcRenderer.on('reset-zoom', callback),
-    onZoomIn: (callback) => ipcRenderer.on('zoom-in', callback),
-    onZoomOut: (callback) => ipcRenderer.on('zoom-out', callback),
-    onSetIncognitoMode: (callback) => ipcRenderer.on('set-incognito-mode', (event, isIncognito) => callback(isIncognito)),
-    onShowSettings: (callback) => ipcRenderer.on('show-settings', callback),
-    onCloseCurrentTab: (callback) => ipcRenderer.on('close-current-tab', callback),
-    onGoBack: (callback) => ipcRenderer.on('go-back', callback),
-    onGoForward: (callback) => ipcRenderer.on('go-forward', callback),
-    onToggleWebviewDevTools: (callback) => ipcRenderer.on('toggle-webview-devtools', callback),
-    onViewPageSource: (callback) => ipcRenderer.on('view-page-source', callback),
+    onFocusAddressBar: (callback) => _registerListener('focus-address-bar', callback),
+    onNewTab: (callback) => _registerListener('new-tab', callback),
+    onNewIncognitoTab: (callback) => _registerListener('new-incognito-tab', callback),
+    onReopenClosedTab: (callback) => _registerListener('reopen-closed-tab', callback),
+    onSavePageAs: (callback) => _registerListener('save-page-as', callback),
+    onPrintPage: (callback) => _registerListener('print-page', callback),
+    onShowHistory: (callback) => _registerListener('show-history', callback),
+    onClearBrowsingData: (callback) => _registerListener('clear-browsing-data', callback),
+    onNextTab: (callback) => _registerListener('next-tab', callback),
+    onPreviousTab: (callback) => _registerListener('previous-tab', callback),
+    onMoveTabRight: (callback) => _registerListener('move-tab-right', callback),
+    onMoveTabLeft: (callback) => _registerListener('move-tab-left', callback),
+    onDuplicateTab: (callback) => _registerListener('duplicate-tab', callback),
+    onReloadPage: (callback) => _registerListener('reload-page', callback),
+    onForceReloadPage: (callback) => _registerListener('force-reload-page', callback),
+    onFindInPage: (callback) => _registerListener('find-in-page', callback),
+    onResetZoom: (callback) => _registerListener('reset-zoom', callback),
+    onZoomIn: (callback) => _registerListener('zoom-in', callback),
+    onZoomOut: (callback) => _registerListener('zoom-out', callback),
+    onSetIncognitoMode: (callback) => _registerListener('set-incognito-mode', (_e, isIncognito) => callback(isIncognito)),
+    onShowSettings: (callback) => _registerListener('show-settings', callback),
+    onCloseCurrentTab: (callback) => _registerListener('close-current-tab', callback),
+    onGoBack: (callback) => _registerListener('go-back', callback),
+    onGoForward: (callback) => _registerListener('go-forward', callback),
+    onToggleWebviewDevTools: (callback) => _registerListener('toggle-webview-devtools', callback),
+    onViewPageSource: (callback) => _registerListener('view-page-source', callback),
 
     // Tab state persistence
     saveTabState: (tabState) => ipcRenderer.invoke('save-tab-state', tabState),
@@ -166,7 +177,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getBrowserSettings: () => ipcRenderer.invoke('get-browser-settings'),
     saveBrowserSettings: (settings) => ipcRenderer.invoke('save-browser-settings', settings),
     setThirdPartyCookieBlocking: (block) => ipcRenderer.invoke('set-third-party-cookie-blocking', block),
-    onWindowClosing: (callback) => ipcRenderer.on('window-closing', callback),
+    setHttpProxy: (config) => ipcRenderer.invoke('set-http-proxy', config),
+    onWindowClosing: (callback) => _registerListener('window-closing', callback),
 
     // Intelligent tab grouping with Claude
     groupTabsWithClaude: (tabsData, model) => ipcRenderer.invoke('group-tabs-with-claude', tabsData, model),
@@ -174,23 +186,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Auto-updater
     checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
     quitAndInstall: () => ipcRenderer.invoke('quit-and-install'),
-    onUpdateChecking: (callback) => ipcRenderer.on('update-checking', callback),
-    onUpdateAvailable: (callback) => ipcRenderer.on('update-available', (event, info) => callback(info)),
-    onUpdateNotAvailable: (callback) => ipcRenderer.on('update-not-available', (event, info) => callback(info)),
-    onUpdateError: (callback) => ipcRenderer.on('update-error', (event, message) => callback(message)),
-    onUpdateDownloadProgress: (callback) => ipcRenderer.on('update-download-progress', (event, progress) => callback(progress)),
-    onUpdateDownloaded: (callback) => ipcRenderer.on('update-downloaded', (event, info) => callback(info)),
+    onUpdateChecking: (callback) => _registerListener('update-checking', callback),
+    onUpdateAvailable: (callback) => _registerListener('update-available', (_e, info) => callback(info)),
+    onUpdateNotAvailable: (callback) => _registerListener('update-not-available', (_e, info) => callback(info)),
+    onUpdateError: (callback) => _registerListener('update-error', (_e, message) => callback(message)),
+    onUpdateDownloadProgress: (callback) => _registerListener('update-download-progress', (_e, progress) => callback(progress)),
+    onUpdateDownloaded: (callback) => _registerListener('update-downloaded', (_e, info) => callback(info)),
 
     // Download manager
     openDownload: (filePath) => ipcRenderer.invoke('open-download', filePath),
     showDownloadInFolder: (filePath) => ipcRenderer.invoke('show-download-in-folder', filePath),
-    onDownloadStarted: (callback) => ipcRenderer.on('download-started', (event, data) => callback(data)),
-    onDownloadProgress: (callback) => ipcRenderer.on('download-progress', (event, data) => callback(data)),
-    onDownloadDone: (callback) => ipcRenderer.on('download-done', (event, data) => callback(data)),
+    onDownloadStarted: (callback) => _registerListener('download-started', (_e, data) => callback(data)),
+    onDownloadProgress: (callback) => _registerListener('download-progress', (_e, data) => callback(data)),
+    onDownloadDone: (callback) => _registerListener('download-done', (_e, data) => callback(data)),
 
     // Default browser
     setAsDefaultBrowser: () => ipcRenderer.invoke('set-as-default-browser'),
 
     // Bookmark import
-    importBookmarks: (browser) => ipcRenderer.invoke('import-bookmarks', browser)
+    importBookmarks: (browser) => ipcRenderer.invoke('import-bookmarks', browser),
+
+    // Onboarding state
+    getOnboardingState: () => ipcRenderer.invoke('get-onboarding-state'),
+    setOnboardingComplete: () => ipcRenderer.invoke('set-onboarding-complete'),
+    resetOnboarding: () => ipcRenderer.invoke('reset-onboarding')
 });
